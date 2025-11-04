@@ -1,0 +1,6 @@
+[submodule "deps/mlib"]
+	path = deps/mlib
+	url = https://github.com/P-p-H-d/mlib
+[submodule "deps/clog"]
+	path = deps/clog
+	url = https://github.com/0xA1M/clog

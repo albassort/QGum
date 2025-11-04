@@ -1,0 +1,12 @@
+
+CompileFlags:
+  Add: 
+    - -I/usr/include/python3.12  
+    - -I./deps/mlib/  
+    - -I./deps/clog/  
+    - -fno-strict-overflow 
+    - -Wsign-compare  
+    - -DNDEBUG 
+    - -lpython3.12
+    
+
