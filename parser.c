@@ -4,8 +4,33 @@
 #include <m-string.h>
 #include <clog.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <ctype.h>
+
+DICT_DEF2 (k_v,
+           const char*,
+           M_CSTR_OPLIST,
+           const char*,
+           M_CSTR_OPLIST)
+
+k_v_t postgres_database_keys;
+
+void
+init_hashsets ()
+{
+  k_v_init (postgres_database_keys);
+  k_v_reserve (postgres_database_keys, 1024);
+  k_v_set_at (postgres_database_keys, "HOST", "a");
+  k_v_set_at (postgres_database_keys, "PORT", "b");
+  k_v_set_at (postgres_database_keys, "CONN", "c");
+};
+
+bool
+test_set (k_v_t set, char** value)
+{
+  return *k_v_safe_get (set, *value) != NULL;
+}
 
 typedef struct
 {
@@ -51,12 +76,80 @@ typedef struct
 
 typedef enum
 {
-  QGUM_VERB
-} read_mode;
+  QGUM_VERB_READING,
+  QGUM_VERB_CONNECT_READING,
+  QGUM_COMPLETE,
+} state_context;
 
-DICT_DEF2 (dict_string, string_t, M_STRING_OPLIST, int*, M_PTR_OPLIST)
+typedef enum
+{
+  DEFAULT,
+  QGUM_VARNAME_READ,
+  QGUM_PAREN_OPEN_READ,
+  QGUM_KV_READ,
+  QGUM_PAREN_CLOSE_READ,
+} state_lower;
 
-const static char* action_words[2] = { "CONNECT", "CREATE" };
+typedef enum
+{
+  QGUM_DATABASE_UNKNOWN,
+  QGUM_DATABASE_POSTGRES
+} db_connection_type;
+
+typedef enum
+{
+  QGUM_INVALID = 0,
+  QGUM_VERB_CONNECT = 1,
+  QGUM_VERB_CREATE = 2,
+  QGUM_VERB_INSERT = 3
+} ast_type;
+
+#define VARNAME_MAX_LENGTH 1024
+
+typedef struct
+{
+  char varname[VARNAME_MAX_LENGTH];
+  bool has_var_name;
+  union
+  {
+    struct
+    {
+      db_connection_type db;
+      k_v_t db_params;
+
+    } qgum_connection_ast;
+  };
+  ast_type type;
+} q_gum_ast;
+
+typedef struct
+{
+  state_context upper;
+  state_lower lower;
+} state;
+
+#define NUMBER_OF_VERBS 3
+
+const static char* verb_to_enum_string[NUMBER_OF_VERBS] = {
+  "CONNECT",
+  "CREATE",
+  "INSERT"
+};
+
+const static ast_type verb_to_enum_enum[NUMBER_OF_VERBS] = {
+  QGUM_VERB_CONNECT,
+  QGUM_VERB_CREATE,
+  QGUM_VERB_INSERT
+};
+
+#define NUMBER_OF_DATABASES 1
+
+const static char* database_strings[NUMBER_OF_DATABASES] = {
+  "POSTGRES"
+};
+
+const static db_connection_type
+  database_enums[NUMBER_OF_DATABASES] = { QGUM_DATABASE_POSTGRES };
 
 void
 flip (FileReader* reader)
@@ -204,7 +297,6 @@ stream_read_util_char_valid (FileReader* reader,
                              char** buff,
                              int* max_length)
 {
-  char c = 'a';
   int i = 0;
   while (true)
   {
@@ -229,44 +321,306 @@ stream_read_util_char_valid (FileReader* reader,
 }
 
 int
-read_word (char* str, char** out_buf, int maxlen)
+valid_var_char (int c)
+{
+
+  return ((c >= '0' && '9' >= c) || (c >= 'A' && 'Z' >= c) ||
+          (c >= '_' && 'z' >= c));
+};
+
+int
+printable (int c)
+{
+
+  return ((c >= '!' && '<' >= c) || (c >= '>' && '~' >= c));
+};
+
+int
+read_word (char* str,
+           char** out_buf,
+           int maxlen,
+           int (*validator) (int),
+           int* written)
 {
   bool reading = false;
   int i = 0;
+  int total_read = 0;
   for (char* p = str; *p != 0; p++)
   {
-    bool alpha = isalpha (*p);
+    total_read++;
+    bool is_valid = validator (*p);
 
-    if (!alpha && !reading)
+    if (!is_valid && !reading)
       continue;
 
     char c = toupper (*p);
 
-    if (alpha && !reading)
+    if (is_valid && !reading)
     {
       reading = true;
       (*out_buf)[i++] = c;
     }
-    else if (alpha && reading)
+    else if (is_valid && reading)
     {
       (*out_buf)[i++] = c;
     }
-    else if (!alpha && reading || i == maxlen - 1)
+    else if ((!is_valid && reading) || i == maxlen - 1)
     {
       (*out_buf)[i++] = 0;
       break;
     }
   }
-  return i;
+  *written = i;
+  return total_read;
 }
+
+// O(1)...
+int
+match_associated_array (char* verb_str,
+                        const char* const* arr1,
+                        const int* arr2,
+                        int length)
+{
+  for (int i = 0; i != length; i++)
+  {
+    // printf ("ASSOCIATE INT %d\n", i);
+    const char* str = arr1[i];
+
+    // printf ("%s %d\n", str, i);
+    // printf ("vs %s %d\n", verb_str, i);
+
+    if (strcmp (str, verb_str) == 0)
+    {
+      return arr2[i];
+    }
+  }
+  return 0;
+};
+
+int
+parse_value (char* str,
+             char** value,
+             int max_length,
+             bool* at_end,
+             int* written)
+{
+  int i = 0;
+  int total_read = 0;
+
+  bool pre_reading = false;
+  bool in_string = false;
+  for (char* p = str; *p != 0; p++)
+  {
+    total_read++;
+    char c = *p;
+    str = p;
+    if (c == '=')
+    {
+      pre_reading = true;
+      break;
+    }
+  }
+
+  if (!pre_reading)
+  {
+    return 0;
+    *written = -1;
+  };
+
+  str++;
+
+  while ((*str == ' ') || (*str == '\n'))
+  {
+    total_read++;
+    str++;
+  }
+
+  printf ("AAAAAA %c\n", *str);
+  // " =    'meow'," ->  "meow,"
+
+  for (char* p = str; *p != 0; p++)
+  {
+    total_read++;
+    char c = *p;
+    if (c == ',' && !in_string)
+    {
+      break;
+    }
+    else if (c == ')' && !in_string)
+    {
+      *at_end = true;
+      break;
+    }
+    else if (c == '\n')
+      continue;
+    else if (c == '\'')
+    {
+      in_string = !in_string;
+      (*value)[i++] = c;
+    }
+    else
+    {
+      if (i == max_length)
+      {
+        break;
+      }
+
+      (*value)[i++] = c;
+    }
+  }
+
+  (*value)[i] = 0;
+  *written = i + 1;
+  return total_read;
+};
+
+void
+parse_kv (char* str, q_gum_ast* AST, int* total_read)
+{
+  bool at_end = false;
+  k_v_t* kv = &AST->qgum_connection_ast.db_params;
+
+  k_v_init (*kv);
+  int written = 0;
+
+  while (!at_end)
+  {
+    char* key = malloc (128);
+    char* value = malloc (128);
+
+    // printf ("CURRENT: %s\n", str);
+
+    int len = read_word (str, &key, 127, isalpha, &written);
+
+    for (int i = 0; i != written; i++)
+    {
+      key[i] = toupper (key[i]);
+    }
+
+    printf ("written %d\n", written);
+    bool set = test_set (postgres_database_keys, &key);
+
+    if (!set)
+    {
+      ERROR ("INVALID KEY: %s!", key);
+    }
+
+    str += len;
+    *total_read += len;
+    len = parse_value (str, &value, 127, &at_end, &written);
+    str += len;
+    *total_read += len;
+    k_v_set_at (*kv, key, value);
+  };
+};
+
+void
+parse (char* buf, q_gum_ast* AST, int start_pos)
+{
+  int written = 0;
+  int offset = start_pos;
+
+  // state state = { .upper = QGUM_VERB_READING, .lower = DEFAULT };
+
+  char* word = malloc (24);
+  int len = read_word (buf, &word, 24, isalpha, &written);
+
+  int ast_type =
+    match_associated_array (word,
+                            verb_to_enum_string,
+                            (const int*) verb_to_enum_enum,
+                            NUMBER_OF_VERBS);
+
+  if (0 >= ast_type)
+  {
+    ERROR ("Invalid command %s at %d\n", word, offset + start_pos);
+    exit (1);
+  }
+
+  offset += len;
+  buf += offset;
+
+  AST->type = ast_type;
+
+  switch (ast_type)
+  {
+    case QGUM_INVALID:
+    {
+      break;
+    }
+    case QGUM_VERB_CONNECT:
+    {
+
+      printf ("here\n");
+      int len = read_word (buf, &word, 24, isalpha, &written);
+      printf ("here\n");
+
+      db_connection_type database =
+        match_associated_array (word,
+                                database_strings,
+                                (const int*) database_enums,
+                                NUMBER_OF_DATABASES);
+      if (0 >= database)
+      {
+        ERROR (
+          "Unknown database %s, at %d", word, offset + start_pos);
+        exit (1);
+      }
+
+      offset += len;
+      buf += len;
+
+      AST->qgum_connection_ast.db = database;
+
+      len = read_word (buf, &word, 24, valid_var_char, &written);
+      // TODO: check len, etc
+
+      printf ("var name %s\n", word);
+      AST->has_var_name = true;
+      strcpy (AST->varname, word);
+
+      int wait_length = 0;
+      for (char* p = buf; *p != '('; p++)
+      {
+        wait_length += 1;
+        if (*p == 0)
+        {
+          ERROR ("EXPECTED '(', but string ended at %d",
+                 offset + wait_length);
+          exit (1);
+        }
+        continue;
+      }
+
+      offset += wait_length + 1;
+      buf += wait_length + 1;
+      printf ("%s\n", buf);
+      int total_read = 0;
+      parse_kv (buf, AST, &total_read);
+
+      k_v_out_str (stdout, AST->qgum_connection_ast.db_params);
+      break;
+    }
+    case QGUM_VERB_INSERT:
+    {
+      break;
+    }
+    case QGUM_VERB_CREATE:
+    {
+      break;
+    }
+  }
+
+  exit (1);
+};
 
 int
 main ()
 {
-
+  init_hashsets ();
   FILE* file = fopen ("./toparse.qgum", "r");
   fseek (file, 0, SEEK_END);
-  int length = ftell (file);
+  // int length = ftell (file);
   rewind (file);
 
   FileReader reader = { .file = file,
@@ -279,13 +633,10 @@ main ()
 
   int max_size = 1024;
   char* current_buf = malloc (max_size);
-  stream_read_util_char_valid (&reader, &current_buf, &max_size);
-  char* word = malloc (24);
 
-  printf ("%s\n", current_buf);
-  int len = read_word (current_buf, &word, 24);
-  printf ("%s\n", word);
-  len = read_word (current_buf + len, &word, 24);
-  printf ("%s\n", word);
+  stream_read_util_char_valid (&reader, &current_buf, &max_size);
+
+  q_gum_ast ast;
+  parse (current_buf, &ast, 0);
   return 1;
 }
