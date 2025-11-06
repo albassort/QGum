@@ -1,4 +1,3 @@
-#include "m-core.h"
 #include <ctype.h>
 #include <m-dict.h>
 #include <m-string.h>
@@ -7,6 +6,18 @@
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
+#include <jansson.h>
+#include "valid_keys.h"
+
+typedef enum
+{
+  QGUM_KEY_TYPE_INVALID = 0,
+  QGUM_KEY_TYPE_INT = 1,
+  QGUM_KEY_TYPE_UINT = 2,
+  QGUM_KEY_TYPE_STRING = 3,
+  QGUM_KEY_TYPE_FLOAT = 4,
+  QGUM_KEY_TYPE_OTHER = 5
+} qgum_key_types;
 
 DICT_DEF2 (k_v,
            const char*,
@@ -14,22 +25,150 @@ DICT_DEF2 (k_v,
            const char*,
            M_CSTR_OPLIST)
 
-k_v_t postgres_database_keys;
+DICT_DEF2 (k_type,
+           const char*,
+           M_CSTR_OPLIST,
+           qgum_key_types,
+           M_BASIC_OPLIST)
+
+json_t* valid_keys;
+k_type_t type_lookup;
 
 void
-init_hashsets ()
+
+init_json ()
 {
-  k_v_init (postgres_database_keys);
-  k_v_reserve (postgres_database_keys, 1024);
-  k_v_set_at (postgres_database_keys, "HOST", "a");
-  k_v_set_at (postgres_database_keys, "PORT", "b");
-  k_v_set_at (postgres_database_keys, "CONN", "c");
+
+  k_type_init (type_lookup);
+
+  k_type_set_at (type_lookup, "string", QGUM_KEY_TYPE_STRING);
+  k_type_set_at (type_lookup, "uint", QGUM_KEY_TYPE_UINT);
+  k_type_set_at (type_lookup, "int", QGUM_KEY_TYPE_INT);
+
+  valid_keys =
+    json_loadb ((char*) valid_keys_json, valid_keys_json_len, 0, 0);
+}
+
+qgum_key_types
+test_set (const char* group, char** value)
+{
+  json_t* g = json_object_get (valid_keys, group);
+
+  if (g == NULL)
+  {
+    return QGUM_KEY_TYPE_INVALID;
+  }
+
+  json_t* v = json_object_get (g, *value);
+
+  const char* type_value =
+    json_string_value (json_object_get (v, "type"));
+
+  printf ("TYPE FOUND: %s - %d\n",
+          type_value,
+          *k_type_get (type_lookup, type_value));
+  return *k_type_get (type_lookup, type_value);
 };
 
-bool
-test_set (k_v_t set, char** value)
+qgum_key_types
+validate_string (char* str)
 {
-  return *k_v_safe_get (set, *value) != NULL;
+  bool escaped = false;
+  printf ("%s fuck\n", str);
+
+  // Because the str]0] == '\'' was done higher up;
+  str++;
+
+  for (char* p = str; *p != 0; p++)
+  {
+    char c = *p;
+    printf ("AA: %c\n", c);
+    if (c == '\\')
+    {
+      escaped = true;
+    }
+    else if (c == '\'')
+    {
+      if (escaped)
+      {
+        escaped = false;
+        continue;
+      }
+      else
+      {
+        if (p[1] == 0)
+        {
+          printf ("meow!!\n");
+          return QGUM_KEY_TYPE_STRING;
+        }
+        else
+        {
+          return QGUM_KEY_TYPE_INVALID;
+        }
+      }
+    }
+  }
+
+  return QGUM_KEY_TYPE_STRING;
+}
+
+qgum_key_types
+identify_str (char* str)
+{
+  printf ("probed %s\n", str);
+  char c = *str;
+  if (c == '\'')
+  {
+    printf ("THIS\n");
+    return validate_string (str);
+  }
+  else if (c == '-' || isdigit (c))
+  {
+    printf ("isdigit\n");
+    if (c == '-')
+      str++;
+
+    bool has_decimal = false;
+
+    for (char* p = str; *p != 0; p++)
+    {
+      char c = *p;
+
+      printf ("meow %c\n", c);
+      if (c == '.' && !has_decimal)
+      {
+        has_decimal = true;
+        continue;
+      }
+      else if (c == '.' && has_decimal)
+      {
+        return QGUM_KEY_TYPE_INVALID;
+      }
+      else if (isdigit (c))
+      {
+        continue;
+      }
+      else
+      {
+        printf ("terminator %c\n", c);
+        return QGUM_KEY_TYPE_INVALID;
+      }
+    }
+
+    if (has_decimal)
+    {
+      return QGUM_KEY_TYPE_FLOAT;
+    }
+
+    return QGUM_KEY_TYPE_INT;
+  }
+  else
+  {
+    // Case not starting with ' or digit/-
+    return QGUM_KEY_TYPE_OTHER;
+  };
+
+  return QGUM_KEY_TYPE_OTHER;
 }
 
 typedef struct
@@ -498,11 +637,12 @@ parse_kv (char* str, q_gum_ast* AST, int* total_read)
     }
 
     printf ("written %d\n", written);
-    bool set = test_set (postgres_database_keys, &key);
+    qgum_key_types set = test_set ("CONNECT_POSTGRESS", &key);
 
-    if (!set)
+    if (set == QGUM_KEY_TYPE_INVALID)
     {
       ERROR ("INVALID KEY: %s!", key);
+      exit (1);
     }
 
     str += len;
@@ -510,6 +650,16 @@ parse_kv (char* str, q_gum_ast* AST, int* total_read)
     len = parse_value (str, &value, 127, &at_end, &written);
     str += len;
     *total_read += len;
+
+    qgum_key_types detected_type = identify_str (value);
+
+    if (detected_type != set)
+    {
+
+      ERROR ("INCORRECT TYPE: %s! %d;%d", key, detected_type, set);
+      exit (1);
+    }
+
     k_v_set_at (*kv, key, value);
   };
 };
@@ -617,7 +767,7 @@ parse (char* buf, q_gum_ast* AST, int start_pos)
 int
 main ()
 {
-  init_hashsets ();
+  init_json ();
   FILE* file = fopen ("./toparse.qgum", "r");
   fseek (file, 0, SEEK_END);
   // int length = ftell (file);
