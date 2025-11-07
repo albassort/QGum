@@ -8,6 +8,11 @@
     },
     "CONN": {
       "type": "string"
-    }
+    },
+    "mandatory_args": [
+      "HOST",
+      "PORT",
+      "CONN"
+    ]
   }
 }

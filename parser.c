@@ -2,51 +2,57 @@
 #include <m-dict.h>
 #include <m-string.h>
 #include <clog.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
 #include <jansson.h>
 #include "valid_keys.h"
+#include "parser.h"
 
-typedef enum
+static inline void
+free_kv (k_v_t* map)
 {
-  QGUM_KEY_TYPE_INVALID = 0,
-  QGUM_KEY_TYPE_INT = 1,
-  QGUM_KEY_TYPE_UINT = 2,
-  QGUM_KEY_TYPE_STRING = 3,
-  QGUM_KEY_TYPE_FLOAT = 4,
-  QGUM_KEY_TYPE_OTHER = 5
-} qgum_key_types;
+  int i = 0;
+  int size = k_v_size (*map);
 
-DICT_DEF2 (k_v,
-           const char*,
-           M_CSTR_OPLIST,
-           const char*,
-           M_CSTR_OPLIST)
+  k_v_it_t it;
+  for (k_v_it (it, *map); i != size; k_v_next (it))
+  {
+    free ((char*) k_v_cref (it)->key);
+    free ((char*) k_v_cref (it)->value);
+    i++;
+  }
 
-DICT_DEF2 (k_type,
-           const char*,
-           M_CSTR_OPLIST,
-           qgum_key_types,
-           M_BASIC_OPLIST)
+  k_v_clear (*map);
+}
 
 json_t* valid_keys;
 k_type_t type_lookup;
+lex_lookup_t lex_lookup;
 
 void
 
-init_json ()
+init_json (void)
 {
 
+  lex_lookup_init (lex_lookup);
   k_type_init (type_lookup);
 
-  k_type_set_at (type_lookup, "string", QGUM_KEY_TYPE_STRING);
-  k_type_set_at (type_lookup, "uint", QGUM_KEY_TYPE_UINT);
-  k_type_set_at (type_lookup, "int", QGUM_KEY_TYPE_INT);
+  k_type_set_at (type_lookup, "string", QGUM_AST_TYPE_STRING);
+  k_type_set_at (type_lookup, "uint", QGUM_AST_TYPE_UINT);
+  k_type_set_at (type_lookup, "int", QGUM_AST_TYPE_INT);
 
   valid_keys =
     json_loadb ((char*) valid_keys_json, valid_keys_json_len, 0, 0);
+}
+
+int
+valid_var_char (int c)
+{
+  return ((c >= '0' && '9' >= c) || (c >= 'A' && 'Z' >= c) ||
+          (c >= '_' && 'z' >= c) || (c == '\\'));
 }
 
 qgum_key_types
@@ -56,7 +62,7 @@ test_set (const char* group, char** value)
 
   if (g == NULL)
   {
-    return QGUM_KEY_TYPE_INVALID;
+    return QGUM_AST_TYPE_INVALID;
   }
 
   json_t* v = json_object_get (g, *value);
@@ -64,67 +70,64 @@ test_set (const char* group, char** value)
   const char* type_value =
     json_string_value (json_object_get (v, "type"));
 
-  printf ("TYPE FOUND: %s - %d\n",
-          type_value,
-          *k_type_get (type_lookup, type_value));
   return *k_type_get (type_lookup, type_value);
-};
+}
 
 qgum_key_types
 validate_string (char* str)
 {
   bool escaped = false;
-  printf ("%s fuck\n", str);
 
+  int escape_counter = 0;
   // Because the str]0] == '\'' was done higher up;
   str++;
 
   for (char* p = str; *p != 0; p++)
   {
     char c = *p;
-    printf ("AA: %c\n", c);
+
+    if (escape_counter == 0)
+    {
+      escaped = false;
+    }
+
     if (c == '\\')
     {
       escaped = true;
+      escape_counter = 2;
     }
-    else if (c == '\'')
+    else if (c == '\'' && !escaped)
     {
-      if (escaped)
+
+      if (p[1] == 0)
       {
-        escaped = false;
-        continue;
+        return QGUM_AST_TYPE_STRING;
       }
       else
       {
-        if (p[1] == 0)
-        {
-          printf ("meow!!\n");
-          return QGUM_KEY_TYPE_STRING;
-        }
-        else
-        {
-          return QGUM_KEY_TYPE_INVALID;
-        }
+        return QGUM_AST_TYPE_INVALID;
       }
+    }
+
+    if (escape_counter > 0)
+    {
+      escape_counter--;
     }
   }
 
-  return QGUM_KEY_TYPE_STRING;
+  return QGUM_AST_TYPE_STRING;
 }
 
 qgum_key_types
 identify_str (char* str)
 {
-  printf ("probed %s\n", str);
   char c = *str;
   if (c == '\'')
   {
-    printf ("THIS\n");
     return validate_string (str);
   }
   else if (c == '-' || isdigit (c))
   {
-    printf ("isdigit\n");
     if (c == '-')
       str++;
 
@@ -134,7 +137,6 @@ identify_str (char* str)
     {
       char c = *p;
 
-      printf ("meow %c\n", c);
       if (c == '.' && !has_decimal)
       {
         has_decimal = true;
@@ -142,7 +144,7 @@ identify_str (char* str)
       }
       else if (c == '.' && has_decimal)
       {
-        return QGUM_KEY_TYPE_INVALID;
+        return QGUM_AST_TYPE_INVALID;
       }
       else if (isdigit (c))
       {
@@ -150,48 +152,42 @@ identify_str (char* str)
       }
       else
       {
-        printf ("terminator %c\n", c);
-        return QGUM_KEY_TYPE_INVALID;
+        return QGUM_AST_TYPE_INVALID;
       }
     }
 
     if (has_decimal)
     {
-      return QGUM_KEY_TYPE_FLOAT;
+      return QGUM_AST_TYPE_FLOAT;
     }
 
-    return QGUM_KEY_TYPE_INT;
+    return QGUM_AST_TYPE_INT;
   }
   else
   {
-    // Case not starting with ' or digit/-
-    return QGUM_KEY_TYPE_OTHER;
+    // Its not a string; it doesn't start with ` or an integer
+    // Attempts to check if it is a variable
+    for (char* p = str; *p != 0; p++)
+    {
+      char c = *p;
+      bool valid = valid_var_char (c);
+      if (!valid)
+      {
+        return QGUM_AST_TYPE_OTHER;
+      }
+    }
+
+    return QGUM_AST_TYPE_VARIABLE;
   };
 
-  return QGUM_KEY_TYPE_OTHER;
+  return QGUM_AST_TYPE_OTHER;
 }
-
-typedef struct
-{
-  union
-  {
-    int b;
-  };
-  int i;
-} example;
-
-typedef struct
-{
-  example* ptr;
-} pointer_holder;
 
 typedef enum
 {
   A,
   B
 } buffmode;
-
-#define FBSIZE 1024
 
 static uint8_t abuff[FBSIZE];
 static uint8_t bbuff[FBSIZE];
@@ -213,75 +209,17 @@ typedef struct
 
 } FileReader;
 
-typedef enum
-{
-  QGUM_VERB_READING,
-  QGUM_VERB_CONNECT_READING,
-  QGUM_COMPLETE,
-} state_context;
-
-typedef enum
-{
-  DEFAULT,
-  QGUM_VARNAME_READ,
-  QGUM_PAREN_OPEN_READ,
-  QGUM_KV_READ,
-  QGUM_PAREN_CLOSE_READ,
-} state_lower;
-
-typedef enum
-{
-  QGUM_DATABASE_UNKNOWN,
-  QGUM_DATABASE_POSTGRES
-} db_connection_type;
-
-typedef enum
-{
-  QGUM_INVALID = 0,
-  QGUM_VERB_CONNECT = 1,
-  QGUM_VERB_CREATE = 2,
-  QGUM_VERB_INSERT = 3
-} ast_type;
-
-#define VARNAME_MAX_LENGTH 1024
-
-typedef struct
-{
-  char varname[VARNAME_MAX_LENGTH];
-  bool has_var_name;
-  union
-  {
-    struct
-    {
-      db_connection_type db;
-      k_v_t db_params;
-
-    } qgum_connection_ast;
-  };
-  ast_type type;
-} q_gum_ast;
-
-typedef struct
-{
-  state_context upper;
-  state_lower lower;
-} state;
-
-#define NUMBER_OF_VERBS 3
-
 const static char* verb_to_enum_string[NUMBER_OF_VERBS] = {
   "CONNECT",
   "CREATE",
   "INSERT"
 };
 
-const static ast_type verb_to_enum_enum[NUMBER_OF_VERBS] = {
-  QGUM_VERB_CONNECT,
-  QGUM_VERB_CREATE,
-  QGUM_VERB_INSERT
+const static qgum_key_types verb_to_enum_enum[NUMBER_OF_VERBS] = {
+  QGUM_AST_VERB_CONNECT,
+  QGUM_AST_VERB_CREATE,
+  QGUM_AST_VERB_INSERT
 };
-
-#define NUMBER_OF_DATABASES 1
 
 const static char* database_strings[NUMBER_OF_DATABASES] = {
   "POSTGRES"
@@ -329,12 +267,20 @@ refill_filebuff (FileReader* reader)
 }
 
 char
-read_next_char (FileReader* reader)
+read_next_char (FileReader* reader, bool* done)
 {
   if (reader->at_end && reader->read_pos == reader->size_left)
   {
-    TRACE ("End of file reached!");
-    exit (1);
+    if (done == NULL)
+    {
+      ERROR ("UNEXPEcTED END OF FILE");
+      exit (1);
+    }
+    else
+    {
+      TRACE ("End of file reached!");
+      *done = true;
+    }
   }
   else if (!reader->read || reader->read_pos == FBSIZE)
   {
@@ -347,7 +293,7 @@ read_next_char (FileReader* reader)
   }
 
   return reader->forward_buff[reader->read_pos++];
-};
+}
 
 char
 stream_read_util_char (FileReader* reader, char chary)
@@ -355,7 +301,7 @@ stream_read_util_char (FileReader* reader, char chary)
   char c;
   while (true)
   {
-    c = read_next_char (reader);
+    c = read_next_char (reader, 0);
     if (c == chary)
     {
       return c;
@@ -372,9 +318,8 @@ stream_filter_comments (FileReader* reader, char c)
   if (c == '-' || c == '/')
   {
 
-    char next = read_next_char (reader);
+    char next = read_next_char (reader, 0);
 
-    // printf ("here: %c -> next: %c\n", c, next);
     if (c == '/' && next == '*')
     {
       one = '*';
@@ -401,79 +346,112 @@ stream_filter_comments (FileReader* reader, char c)
 
   while (true)
   {
-    char next = read_next_char (reader);
+    char next = read_next_char (reader, 0);
     if (next == one)
     {
-      char nextnext = read_next_char (reader);
+      char nextnext = read_next_char (reader, 0);
       if (nextnext == two)
       {
-        return read_next_char (reader);
+        return read_next_char (reader, 0);
       }
     }
   }
 }
 
 char
-stream_read_util_valid_ascii (FileReader* reader)
+stream_read_util_valid_ascii (FileReader* reader, bool* done)
 {
   char c;
   while (true)
   {
-    c = read_next_char (reader);
-    char cProper = stream_filter_comments (reader, c);
+    c = read_next_char (reader, done);
+    char c_proper = stream_filter_comments (reader, c);
 
-    printf ("%c - %c\n", c, cProper);
+    // printf ("%c - %c\n", c, c_proper);
 
-    if (isascii (cProper))
+    if (isascii (c_proper))
     {
-      return cProper;
+      return c_proper;
     }
   }
 }
 
 void
-stream_read_util_char_valid (FileReader* reader,
-                             char** buff,
-                             int* max_length)
+stream_read_statement (FileReader* reader,
+                       char** buff,
+                       int* max_length,
+                       bool* end_of_file)
 {
   int i = 0;
+  bool at_end = false;
+  bool read_char = false;
+  bool in_quote = false;
+  bool escape = false;
   while (true)
   {
+
     if (i >= *max_length)
     {
       *max_length *= 2;
       *buff = realloc (*buff, *max_length);
     }
 
-    char c = stream_read_util_valid_ascii (reader);
-
-    printf ("%c\n", c);
-    if (c == ';')
+    char c = stream_read_util_valid_ascii (reader, &at_end);
+    // printf ("%c - %b - %b\n", c, in_quote, escape);
+    if (in_quote && escape)
     {
-      printf ("\n");
+
+      (*buff)[i++] = c;
+      escape = false;
+      continue;
+    }
+
+    if (c == '\\' && in_quote)
+    {
+      escape = true;
+    }
+    else if (c == '\'' && !escape)
+    {
+      in_quote = !in_quote;
+    }
+    else if (c == ';' && !in_quote)
+    {
       (*buff)[i] = 0;
       return;
+    }
+    else if (!read_char && (!isspace (c) && c != 0))
+    {
+      read_char = true;
+    }
+    else if (at_end)
+    {
+      if (read_char)
+      {
+
+        (*buff)[i] = 0;
+        ERROR ("Unexpected end of file.");
+        exit (1);
+      }
+      else
+      {
+        FIXME ("Normal end of file");
+        *end_of_file = true;
+        (*buff)[i] = 0;
+        return;
+      }
     }
 
     (*buff)[i++] = c;
   }
 }
 
-int
-valid_var_char (int c)
-{
-
-  return ((c >= '0' && '9' >= c) || (c >= 'A' && 'Z' >= c) ||
-          (c >= '_' && 'z' >= c));
-};
-
-int
-printable (int c)
-{
-
-  return ((c >= '!' && '<' >= c) || (c >= '>' && '~' >= c));
-};
-
+// inline static int
+// printable (int c)
+// {
+//   return ((c >= '!' && '<' >= c) || (c >= '>' && '~' >= c));
+// }
+//
+//
 int
 read_word (char* str,
            char** out_buf,
@@ -505,10 +483,11 @@ read_word (char* str,
     }
     else if ((!is_valid && reading) || i == maxlen - 1)
     {
-      (*out_buf)[i++] = 0;
       break;
     }
   }
+
+  (*out_buf)[i++] = 0;
   *written = i;
   return total_read;
 }
@@ -534,7 +513,7 @@ match_associated_array (char* verb_str,
     }
   }
   return 0;
-};
+}
 
 int
 parse_value (char* str,
@@ -568,53 +547,67 @@ parse_value (char* str,
 
   str++;
 
-  while ((*str == ' ') || (*str == '\n'))
+  while (isspace (*str))
   {
     total_read++;
     str++;
   }
 
-  printf ("AAAAAA %c\n", *str);
+  // printf ("AAAAAA %c\n", *str);
   // " =    'meow'," ->  "meow,"
 
+  bool escaped = false;
+  int escape_counter = 0;
+  in_string = *str == '\'';
   for (char* p = str; *p != 0; p++)
   {
-    total_read++;
+    if (escape_counter == 0)
+      escaped = false;
+
     char c = *p;
-    if (c == ',' && !in_string)
+    if (!in_string)
     {
-      break;
-    }
-    else if (c == ')' && !in_string)
-    {
-      *at_end = true;
-      break;
-    }
-    else if (c == '\n')
-      continue;
-    else if (c == '\'')
-    {
-      in_string = !in_string;
-      (*value)[i++] = c;
-    }
-    else
-    {
-      if (i == max_length)
+      if (c == ',')
       {
         break;
       }
 
-      (*value)[i++] = c;
+      else if (c == ')')
+      {
+        *at_end = true;
+        break;
+      }
+      else if (!valid_var_char (c))
+      {
+        continue;
+      }
     }
+
+    if (c == '\'' && in_string && !escaped)
+    {
+      in_string = false;
+    }
+    else if (c == '\\' && !escaped)
+    {
+      escaped = true;
+      escape_counter = 2;
+    }
+
+    if (escape_counter > 0)
+    {
+      escape_counter--;
+    }
+
+    (*value)[i++] = c;
   }
 
   (*value)[i] = 0;
   *written = i + 1;
   return total_read;
-};
+}
 
 void
-parse_kv (char* str, q_gum_ast* AST, int* total_read)
+parse_kv (char* str, q_gum_ast* AST, int* total_read, char* group)
 {
   bool at_end = false;
   k_v_t* kv = &AST->qgum_connection_ast.db_params;
@@ -636,10 +629,10 @@ parse_kv (char* str, q_gum_ast* AST, int* total_read)
       key[i] = toupper (key[i]);
     }
 
-    printf ("written %d\n", written);
-    qgum_key_types set = test_set ("CONNECT_POSTGRESS", &key);
+    FIXME ("Got key: %.*s, total written: %d", written, key, written);
+    qgum_key_types set = test_set (group, &key);
 
-    if (set == QGUM_KEY_TYPE_INVALID)
+    if (set == QGUM_AST_TYPE_INVALID)
     {
       ERROR ("INVALID KEY: %s!", key);
       exit (1);
@@ -651,18 +644,50 @@ parse_kv (char* str, q_gum_ast* AST, int* total_read)
     str += len;
     *total_read += len;
 
+    FIXME (
+      "Got value: %.*s, total written: %d", written, value, written);
+
     qgum_key_types detected_type = identify_str (value);
 
+    if (detected_type == QGUM_AST_TYPE_VARIABLE)
+    {
+
+      q_gum_ast** ast = lex_lookup_safe_get (lex_lookup, value);
+
+      if (*ast == NULL)
+      {
+        ERROR ("UNDEFINED SYMBOL: %s", value);
+        exit (1);
+      };
+      detected_type = (*ast)->type;
+    }
     if (detected_type != set)
     {
 
       ERROR ("INCORRECT TYPE: %s! %d;%d", key, detected_type, set);
       exit (1);
     }
-
     k_v_set_at (*kv, key, value);
   };
-};
+
+  json_t* g = json_object_get (valid_keys, group);
+  json_t* mandatory = json_object_get (g, "mandatory_args");
+  size_t index;
+  json_t* value;
+
+  json_array_foreach (mandatory, index, value)
+  {
+    const char* v = json_string_value (value);
+
+    const char** k = k_v_safe_get (*kv, v);
+
+    if (*k == NULL)
+    {
+      ERROR ("%s is a mandatory key, not found.\n", v);
+      exit (1);
+    }
+  }
+}
 
 void
 parse (char* buf, q_gum_ast* AST, int start_pos)
@@ -670,18 +695,20 @@ parse (char* buf, q_gum_ast* AST, int start_pos)
   int written = 0;
   int offset = start_pos;
 
-  // state state = { .upper = QGUM_VERB_READING, .lower = DEFAULT };
+  // state state = { .upper = QGUM_AST_VERB_READING, .lower = DEFAULT
+  // };
 
-  char* word = malloc (24);
-  int len = read_word (buf, &word, 24, isalpha, &written);
+  char* word = malloc (VARNAME_MAX_LENGTH);
+  int len =
+    read_word (buf, &word, VARNAME_MAX_LENGTH, isalpha, &written);
 
-  int ast_type =
+  int qgum_key_types =
     match_associated_array (word,
                             verb_to_enum_string,
                             (const int*) verb_to_enum_enum,
                             NUMBER_OF_VERBS);
 
-  if (0 >= ast_type)
+  if (0 >= qgum_key_types)
   {
     ERROR ("Invalid command %s at %d\n", word, offset + start_pos);
     exit (1);
@@ -690,20 +717,14 @@ parse (char* buf, q_gum_ast* AST, int start_pos)
   offset += len;
   buf += offset;
 
-  AST->type = ast_type;
+  AST->type = qgum_key_types;
 
-  switch (ast_type)
+  switch (qgum_key_types)
   {
-    case QGUM_INVALID:
+    case QGUM_AST_VERB_CONNECT:
     {
-      break;
-    }
-    case QGUM_VERB_CONNECT:
-    {
-
-      printf ("here\n");
-      int len = read_word (buf, &word, 24, isalpha, &written);
-      printf ("here\n");
+      int len =
+        read_word (buf, &word, VARNAME_MAX_LENGTH, isalpha, &written);
 
       db_connection_type database =
         match_associated_array (word,
@@ -722,12 +743,24 @@ parse (char* buf, q_gum_ast* AST, int start_pos)
 
       AST->qgum_connection_ast.db = database;
 
-      len = read_word (buf, &word, 24, valid_var_char, &written);
-      // TODO: check len, etc
+      len = read_word (
+        buf, &word, VARNAME_MAX_LENGTH, valid_var_char, &written);
 
-      printf ("var name %s\n", word);
       AST->has_var_name = true;
       strcpy (AST->varname, word);
+
+      q_gum_ast** taken_check =
+        lex_lookup_safe_get (lex_lookup, AST->varname);
+
+      if (*taken_check != NULL)
+      {
+        ERROR ("SYMBOL NAME TAKEN %s", word);
+        exit (1);
+      }
+      else
+      {
+        lex_lookup_set_at (lex_lookup, AST->varname, AST);
+      }
 
       int wait_length = 0;
       for (char* p = buf; *p != '('; p++)
@@ -744,28 +777,32 @@ parse (char* buf, q_gum_ast* AST, int start_pos)
 
       offset += wait_length + 1;
       buf += wait_length + 1;
-      printf ("%s\n", buf);
       int total_read = 0;
-      parse_kv (buf, AST, &total_read);
+      parse_kv (buf, AST, &total_read, "CONNECT_POSTGRESS");
 
       k_v_out_str (stdout, AST->qgum_connection_ast.db_params);
       break;
     }
-    case QGUM_VERB_INSERT:
+    case QGUM_AST_VERB_INSERT:
     {
       break;
     }
-    case QGUM_VERB_CREATE:
+    case QGUM_AST_VERB_CREATE:
     {
       break;
+    }
+    default:
+    {
+      ERROR ("unreachable.");
+      exit (1);
     }
   }
 
-  exit (1);
-};
+  free (word);
+}
 
 int
-main ()
+main (void)
 {
   init_json ();
   FILE* file = fopen ("./toparse.qgum", "r");
@@ -782,11 +819,38 @@ main ()
                         .mode = A };
 
   int max_size = 1024;
+
+  int ast_max_count = 16;
+  int ast_count = 0;
+  q_gum_ast* parsed_ast = malloc (sizeof (q_gum_ast) * ast_max_count);
+
   char* current_buf = malloc (max_size);
+  bool end_of_file = false;
+  while (true)
+  {
+    if (ast_count >= ast_max_count)
+    {
+      ast_max_count *= 2;
+      parsed_ast =
+        realloc (parsed_ast, sizeof (q_gum_ast) * ast_max_count);
+    }
 
-  stream_read_util_char_valid (&reader, &current_buf, &max_size);
+    q_gum_ast* current_ast = &parsed_ast[ast_count++];
 
-  q_gum_ast ast;
-  parse (current_buf, &ast, 0);
+    stream_read_statement (
+      &reader, &current_buf, &max_size, &end_of_file);
+
+    if (end_of_file)
+    {
+      break;
+    }
+    parse (current_buf, current_ast, 0);
+
+    k_v_t* map = &current_ast->qgum_connection_ast.db_params;
+    free_kv (map);
+  }
+
+  free (current_buf);
+
   return 1;
 }
