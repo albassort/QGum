@@ -3,13 +3,10 @@ connect POSTGRES pg_conn(
   port = 5434, 
   conn = 'DATABASE=db USER=user password=password');
 
--- test
-/* 
-lmao
-*/
+create plot varname(test = 'a');
+create plot varname1(test = 'a');
 
-CONNECT POSTGRES pd_conn(
-  host = '127.0.0.1',
-  port = 5434, 
-  conn = 'DATABASE=db USER=user password=password'
+insert into varname1 with pg_conn(
+    select * from mysechema.mytable
 );
+

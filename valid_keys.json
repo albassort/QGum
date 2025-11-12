@@ -14,5 +14,13 @@
       "PORT",
       "CONN"
     ]
+  },
+  "VALID_CREATE": {
+    "PLOT": {
+      "TEST": {
+        "type": "string"
+      },
+      "mandatory_args": []
+    }
   }
 }

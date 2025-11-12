@@ -5,6 +5,7 @@
 #define NUMBER_OF_VERBS 3
 #define FBSIZE 1024
 #define NUMBER_OF_DATABASES 1
+#define NUMBER_OF_CREATES 1
 
 typedef enum
 {
@@ -25,6 +26,11 @@ typedef enum
   QGUM_DATABASE_UNKNOWN,
   QGUM_DATABASE_POSTGRES
 } db_connection_type;
+
+typedef enum
+{
+  QGUM_CREATE_PLOT
+} qgum_create_types;
 
 typedef enum
 {
@@ -63,9 +69,14 @@ typedef struct
     struct
     {
       db_connection_type db;
-      k_v_t db_params;
+      k_v_t params;
 
     } qgum_connection_ast;
+    struct
+    {
+      qgum_create_types create_type;
+      k_v_t params;
+    } qgum_create_ast;
 
     struct
     {

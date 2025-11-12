@@ -1,6 +1,6 @@
 CC := clang -x c
 
-python-version := $(shell python3 -c 'import sys; print(f"-lpython{sys.version_info.major}.{sys.version_info.minor}")')
+python-version := $(shell pkg-config --libs python3-embed)
 
 cflags :=  -Wall -Wextra -Wswitch -Wswitch-enum -Wimplicit-fallthrough  -Wpedantic
 include := -Ideps/mlib -Ideps/clog

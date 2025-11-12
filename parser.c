@@ -55,10 +55,20 @@ valid_var_char (int c)
           (c >= '_' && 'z' >= c) || (c == '\\'));
 }
 
+/**
+ *
+ * This takes in a group, with a value, and evaluates its type.
+ * The type is in a "type": "${type}" within the json. E.g
+ * CONNECT_POSTGRESS.
+ *
+ * @param group The Json group
+ * @param value The value within the group
+ * @return The type found.
+ */
 qgum_key_types
-test_set (const char* group, char** value)
+get_json_param_type (json_t* root, const char* group, char** value)
 {
-  json_t* g = json_object_get (valid_keys, group);
+  json_t* g = json_object_get (root, group);
 
   if (g == NULL)
   {
@@ -67,12 +77,29 @@ test_set (const char* group, char** value)
 
   json_t* v = json_object_get (g, *value);
 
+  if (v == NULL)
+  {
+    return QGUM_AST_TYPE_INVALID;
+  }
+
   const char* type_value =
     json_string_value (json_object_get (v, "type"));
+
+  if (type_value == NULL)
+  {
+
+    ERROR ("'TYPE' VALUE NOT FOUND ON GROUP: %s, VALUE: %s",
+           group,
+           *value);
+    exit (1);
+  };
 
   return *k_type_get (type_lookup, type_value);
 }
 
+/**
+ * Validates a string as a parameter
+ * */
 qgum_key_types
 validate_string (char* str)
 {
@@ -118,8 +145,12 @@ validate_string (char* str)
   return QGUM_AST_TYPE_STRING;
 }
 
+/**
+ * Takes in a raw parameter, and identifies its type. E.g -512 -> int;
+ * "Hello" -> string
+ * */
 qgum_key_types
-identify_str (char* str)
+identify_raw_key (char* str)
 {
   char c = *str;
   if (c == '\'')
@@ -227,6 +258,12 @@ const static char* database_strings[NUMBER_OF_DATABASES] = {
 
 const static db_connection_type
   database_enums[NUMBER_OF_DATABASES] = { QGUM_DATABASE_POSTGRES };
+
+const static char* create_strings[NUMBER_OF_CREATES] = { "PLOT" };
+
+const static qgum_create_types create_to_enum[NUMBER_OF_CREATES] = {
+  QGUM_CREATE_PLOT
+};
 
 void
 flip (FileReader* reader)
@@ -512,9 +549,13 @@ match_associated_array (char* verb_str,
       return arr2[i];
     }
   }
-  return 0;
+  return -1;
 }
 
+/**
+ * Parses a raw value, after a '=', and reads its value into @param
+ * value.
+ * */
 int
 parse_value (char* str,
              char** value,
@@ -559,7 +600,7 @@ parse_value (char* str,
   bool escaped = false;
   int escape_counter = 0;
   in_string = *str == '\'';
-  for (char* p = str; *p != 0; p++)
+  for (char* p = str; (*p != 0 && max_length > i); p++)
   {
     if (escape_counter == 0)
       escaped = false;
@@ -607,10 +648,14 @@ parse_value (char* str,
 }
 
 void
-parse_kv (char* str, q_gum_ast* AST, int* total_read, char* group)
+parse_kv (char* str,
+          q_gum_ast* AST,
+          int* total_read,
+          char* group,
+          json_t* root)
 {
   bool at_end = false;
-  k_v_t* kv = &AST->qgum_connection_ast.db_params;
+  k_v_t* kv = &AST->qgum_connection_ast.params;
 
   k_v_init (*kv);
   int written = 0;
@@ -630,7 +675,7 @@ parse_kv (char* str, q_gum_ast* AST, int* total_read, char* group)
     }
 
     FIXME ("Got key: %.*s, total written: %d", written, key, written);
-    qgum_key_types set = test_set (group, &key);
+    qgum_key_types set = get_json_param_type (root, group, &key);
 
     if (set == QGUM_AST_TYPE_INVALID)
     {
@@ -647,7 +692,7 @@ parse_kv (char* str, q_gum_ast* AST, int* total_read, char* group)
     FIXME (
       "Got value: %.*s, total written: %d", written, value, written);
 
-    qgum_key_types detected_type = identify_str (value);
+    qgum_key_types detected_type = identify_raw_key (value);
 
     if (detected_type == QGUM_AST_TYPE_VARIABLE)
     {
@@ -670,7 +715,7 @@ parse_kv (char* str, q_gum_ast* AST, int* total_read, char* group)
     k_v_set_at (*kv, key, value);
   };
 
-  json_t* g = json_object_get (valid_keys, group);
+  json_t* g = json_object_get (root, group);
   json_t* mandatory = json_object_get (g, "mandatory_args");
   size_t index;
   json_t* value;
@@ -678,6 +723,7 @@ parse_kv (char* str, q_gum_ast* AST, int* total_read, char* group)
   json_array_foreach (mandatory, index, value)
   {
     const char* v = json_string_value (value);
+    TRACE ("mandatory: %s\n", v);
 
     const char** k = k_v_safe_get (*kv, v);
 
@@ -702,13 +748,13 @@ parse (char* buf, q_gum_ast* AST, int start_pos)
   int len =
     read_word (buf, &word, VARNAME_MAX_LENGTH, isalpha, &written);
 
-  int qgum_key_types =
+  int verb_type =
     match_associated_array (word,
                             verb_to_enum_string,
                             (const int*) verb_to_enum_enum,
                             NUMBER_OF_VERBS);
 
-  if (0 >= qgum_key_types)
+  if (0 >= verb_type)
   {
     ERROR ("Invalid command %s at %d\n", word, offset + start_pos);
     exit (1);
@@ -717,9 +763,9 @@ parse (char* buf, q_gum_ast* AST, int start_pos)
   offset += len;
   buf += offset;
 
-  AST->type = qgum_key_types;
+  AST->type = verb_type;
 
-  switch (qgum_key_types)
+  switch (verb_type)
   {
     case QGUM_AST_VERB_CONNECT:
     {
@@ -778,17 +824,157 @@ parse (char* buf, q_gum_ast* AST, int start_pos)
       offset += wait_length + 1;
       buf += wait_length + 1;
       int total_read = 0;
-      parse_kv (buf, AST, &total_read, "CONNECT_POSTGRESS");
+      parse_kv (
+        buf, AST, &total_read, "CONNECT_POSTGRESS", valid_keys);
 
-      k_v_out_str (stdout, AST->qgum_connection_ast.db_params);
+      k_v_out_str (stdout, AST->qgum_connection_ast.params);
       break;
     }
     case QGUM_AST_VERB_INSERT:
     {
+      int len =
+        read_word (buf, &word, VARNAME_MAX_LENGTH, isalpha, &written);
+
+      TRACE ("%s\n", word);
+      if (strcmp (word, "INTO") != 0)
+      {
+        ERROR ("Expected `INTO` after `INSERT`");
+        exit (1);
+      };
+
+      offset += len;
+      buf += len;
+
+      len = read_word (
+        buf, &word, VARNAME_MAX_LENGTH, valid_var_char, &written);
+      TRACE ("VARNAME = %s\n", word);
+
+      q_gum_ast** ast = lex_lookup_safe_get (lex_lookup, word);
+
+      if (*ast == NULL)
+      {
+        ERROR ("UNDEFINED SYMBOL: %s", word);
+        exit (1);
+      };
+
+      offset += len;
+      buf += len;
+
+      len =
+        read_word (buf, &word, VARNAME_MAX_LENGTH, isalpha, &written);
+
+      if (strcmp (word, "WITH") != 0)
+      {
+        ERROR ("Expected WITH after varname in INSERT got %s\n",
+               word);
+        exit (1);
+      }
+
+      offset += len;
+      buf += len;
+
+      len = read_word (
+        buf, &word, VARNAME_MAX_LENGTH, valid_var_char, &written);
+
+      q_gum_ast** connection = lex_lookup_safe_get (lex_lookup, word);
+
+      if (*connection == NULL)
+      {
+        ERROR ("UNDEFINED SYMBOL, EXPECTED CONNECTION: %s", word);
+        exit (1);
+      };
+
+      if ((*connection)->type != QGUM_AST_VERB_CONNECT)
+      {
+        ERROR ("%s IS SUPPOSED TO BE OF TYPE `CONNECT`", word);
+        exit (1);
+      }
+
+      offset += len;
+      buf += len;
+      printf ("ongoing\n");
       break;
     }
     case QGUM_AST_VERB_CREATE:
     {
+
+      AST->type = QGUM_AST_VERB_CREATE;
+
+      len =
+        read_word (buf, &word, VARNAME_MAX_LENGTH, isalpha, &written);
+
+      json_t* valid_create =
+        json_object_get (valid_keys, "VALID_CREATE");
+
+      json_t* group = json_object_get (valid_create, word);
+
+      if (group == NULL)
+      {
+        ERROR ("INVALID TYPE FOR CREATE: %s", word);
+        exit (1);
+      }
+
+      TRACE ("creating: %s", word);
+
+      char create_type[128];
+      strcpy (create_type, word);
+
+      offset += len;
+      buf += len;
+
+      qgum_create_types create_enum =
+        match_associated_array (word,
+                                create_strings,
+                                (int*) create_to_enum,
+                                NUMBER_OF_CREATES);
+
+      AST->qgum_create_ast.create_type = create_enum;
+
+      if ((int) create_enum == -1)
+      {
+        ERROR ("CREATE ENUM LOOKUP FAILED\n");
+        exit (1);
+      }
+
+      len = read_word (
+        buf, &word, VARNAME_MAX_LENGTH, valid_var_char, &written);
+
+      AST->has_var_name = true;
+      strcpy (AST->varname, word);
+      q_gum_ast** ast =
+        lex_lookup_safe_get (lex_lookup, AST->varname);
+      TRACE ("VARNAME: %s", word);
+
+      if (*ast)
+      {
+        ERROR ("LEX LOOKUP TAKEN: %s", word);
+        exit (1);
+      }
+      offset += len - 1;
+      buf += len - 1;
+
+      int wait_length = 0;
+      for (char* p = buf; *p != '('; p++)
+      {
+        printf ("%c\n", *p);
+        wait_length += 1;
+        if (*p == 0)
+        {
+          ERROR ("EXPECTED '(', but string ended at %d",
+                 offset + wait_length);
+          exit (1);
+        }
+        continue;
+      }
+
+      offset += wait_length + 1;
+      buf += wait_length + 1;
+
+      printf ("%s\n", buf);
+      int total_read = 0;
+      parse_kv (buf, AST, &total_read, create_type, valid_create);
+
+      lex_lookup_set_at (lex_lookup, AST->varname, AST);
       break;
     }
     default:
@@ -845,9 +1031,6 @@ main (void)
       break;
     }
     parse (current_buf, current_ast, 0);
-
-    k_v_t* map = &current_ast->qgum_connection_ast.db_params;
-    free_kv (map);
   }
 
   free (current_buf);
