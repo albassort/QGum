@@ -1,12 +1,13 @@
-connect POSTGRES pg_conn(
-  host = '12;7.0.0.1 \' ',
-  port = 5434, 
-  conn = 'DATABASE=db USER=user password=password');
+CONNECT postgres pg_conn(
+  host = '1.2;7.0.0.1  pizza',
+  conn = 'DATABASE=db USER=user password=password',  
+  port = 50124
+);
 
 create plot varname(test = 'a');
 create plot varname1(test = 'a');
 
-insert into varname1 with pg_conn(
+insert into varname1(x,y) values with pg_conn(
     select * from mysechema.mytable
 );
 

@@ -39,7 +39,9 @@ py: test.c
 valid_keys.h: valid_keys.json
 	xxd -i valid_keys.json > $@
 
-parser: parser.c valid_keys.h
+parser: cflags += -lclex
+
+parser: parser.c valid_keys.h parser.h
 	$(call check_lib,jansson)
 	$(CC) parser.c $(include) $(cflags) $(link) -o $@
 

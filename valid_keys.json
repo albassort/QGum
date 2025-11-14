@@ -1,26 +1,36 @@
 {
-  "CONNECT_POSTGRESS": {
-    "HOST": {
-      "type": "string"
-    },
-    "PORT": {
-      "type": "int"
-    },
-    "CONN": {
-      "type": "string"
-    },
-    "mandatory_args": [
-      "HOST",
-      "PORT",
-      "CONN"
-    ]
+  "DATABASE_CONNECTIONS": {
+    "POSTGRES": {
+      "HOST": {
+        "type": "string"
+      },
+      "PORT": {
+        "type": "int"
+      },
+      "CONN": {
+        "type": "string"
+      },
+      "mandatory_args": [
+        "HOST",
+        "PORT",
+        "CONN"
+      ]
+    }
   },
   "VALID_CREATE": {
     "PLOT": {
       "TEST": {
         "type": "string"
       },
-      "mandatory_args": []
+      "mandatory_args": [],
+      "insert_columns": [
+        "x",
+        "y"
+      ],
+      "mandatory_insert": [
+        "x",
+        "y"
+      ]
     }
   }
 }
