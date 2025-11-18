@@ -2,7 +2,10 @@
 #include <jansson.h>
 #include <stdint.h>
 #include <m-dict.h>
-#include "deps/clex/clex.h"
+#include "../../deps/clex/clex.h"
+
+#ifndef QGUM_PARSER
+#define QGUM_PARSER
 #define VARNAME_MAX_LENGTH 1024
 #define NUMBER_OF_VERBS 3
 #define FBSIZE 1024
@@ -87,6 +90,7 @@ typedef struct
       struct q_gum_ast* ast;
       size_t num_of_cols;
       char** cols;
+      char* insert_statement;
     } qgum_insert_ast;
 
     struct
@@ -112,6 +116,7 @@ typedef enum QGUM_TOKEN_KIND
   COMMA,
   SEMICOL,
   IDENTIFIER,
+  ASTERIX,
   EQUALS,
   STRING,
   NUMBER,
@@ -130,7 +135,7 @@ typedef enum QGUM_TOKEN_KIND
 
 } TokenKind;
 
-void
+static inline void
 init_lexer (clexLexer** lexer)
 {
 
@@ -154,10 +159,12 @@ init_lexer (clexLexer** lexer)
 
   clexRegisterKind (*lexer, "'", STRING);
   clexRegisterKind (*lexer, "`", STRING);
+  clexRegisterKind (*lexer, "\"", STRING);
   clexRegisterKind (
     *lexer, "[a-zA-Z_]([a-zA-Z_]|[0-9])*", IDENTIFIER);
   clexRegisterKind (*lexer, "[+-]?[0-9]", NUMBER);
   clexRegisterKind (*lexer, "[+-]?([0-9]*[.])?[0-9]+", FLOAT);
+  clexRegisterKind (*lexer, "[\\\\*]", ASTERIX);
 
   // clexReset (*lexer, "insert INTO TABLE\nTEST(A = 'aq\\c') ");
   // clexToken token;
@@ -170,3 +177,16 @@ init_lexer (clexLexer** lexer)
   //           token.linepos);
   // }
 }
+
+void
+init_data (void);
+
+q_gum_ast*
+read_qgum (char*, int*);
+
+struct test
+{
+  int i;
+};
+
+#endif

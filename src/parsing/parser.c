@@ -11,9 +11,32 @@
 #include <ctype.h>
 #include <jansson.h>
 #include <unistd.h>
-#include "valid_keys.h"
 #include "parser.h"
-#include "deps/clex/clex.h"
+#include "../../deps/clex/clex.h"
+#include "./valid_keys.h"
+
+static json_t* valid_keys;
+static k_type_t type_lookup;
+static lex_lookup_t lex_lookup;
+
+void
+init_data (void)
+{
+
+  lex_lookup_init (lex_lookup);
+  k_type_init (type_lookup);
+
+  k_type_set_at (type_lookup, "string", QGUM_AST_TYPE_STRING);
+  k_type_set_at (type_lookup, "uint", QGUM_AST_TYPE_UINT);
+  k_type_set_at (type_lookup, "int", QGUM_AST_TYPE_INT);
+  k_type_set_at (type_lookup, "float", QGUM_AST_TYPE_FLOAT);
+
+  valid_keys =
+    json_loadb ((char*) valid_keys_json, valid_keys_json_len, 0, 0);
+}
+
+q_gum_ast*
+read_qgum (char*, int*);
 
 static inline void
 free_kv (k_v_t* map)
@@ -22,19 +45,24 @@ free_kv (k_v_t* map)
   int size = k_v_size (*map);
 
   k_v_it_t it;
-  for (k_v_it (it, *map); i != size; k_v_next (it))
+  for (k_v_it (it, *map); size > i; k_v_next (it))
   {
-    free ((char*) k_v_cref (it)->key);
-    free ((char*) k_v_cref (it)->value);
+    const k_v_itref_t* got = k_v_cref (it);
+    if (got->key == NULL && got->value == NULL)
+    {
+      continue;
+    }
+    printf ("%.*s\n", 10, got->key);
+    printf ("%s\n", got->value);
+    free ((char*) got->key);
+    free ((char*) got->value);
+    printf ("!!\n");
     i++;
   }
 
+  k_v_reset (*map);
   k_v_clear (*map);
 }
-
-json_t* valid_keys;
-k_type_t type_lookup;
-lex_lookup_t lex_lookup;
 
 clexToken
 clex_sc (clexLexer* lexer)
@@ -60,22 +88,6 @@ clex_sc (clexLexer* lexer)
   };
 
   return result;
-}
-
-void
-init_json (void)
-{
-
-  lex_lookup_init (lex_lookup);
-  k_type_init (type_lookup);
-
-  k_type_set_at (type_lookup, "string", QGUM_AST_TYPE_STRING);
-  k_type_set_at (type_lookup, "uint", QGUM_AST_TYPE_UINT);
-  k_type_set_at (type_lookup, "int", QGUM_AST_TYPE_INT);
-  k_type_set_at (type_lookup, "float", QGUM_AST_TYPE_FLOAT);
-
-  valid_keys =
-    json_loadb ((char*) valid_keys_json, valid_keys_json_len, 0, 0);
 }
 
 int
@@ -195,7 +207,6 @@ agregate_value (clexLexer* lexer,
                 char start_char)
 {
   clexToken token;
-  bool in_string = false;
   bool escaped = false;
   *length_written = 0;
   while (true)
@@ -218,7 +229,7 @@ agregate_value (clexLexer* lexer,
       escaped = true;
       continue;
     }
-    else if (token.kind == STRING && !in_string && !escaped &&
+    else if (token.kind == STRING && !escaped &&
              token.lexeme[0] == start_char)
     {
 
@@ -257,7 +268,6 @@ parse_kv (clexLexer* lexer,
 {
 
   clexToken token;
-  k_v_init (AST->params);
 
   static const int default_max_length = 1024;
   while (true)
@@ -333,13 +343,13 @@ parse_kv (clexLexer* lexer,
 
     bool end = token.kind == CPARAN;
 
-    k_v_set_at (AST->params, key, value);
-    // normalize key
     for (char* p = key; *p != 0; p++)
     {
       *p = toupper (*p);
     }
 
+    k_v_set_at (AST->params, key, value);
+    // normalize key
     qgum_key_types correct_type = get_json_param_type (group, key);
 
     if (correct_type == QGUM_AST_TYPE_INVALID)
@@ -440,6 +450,82 @@ parse_kv (clexLexer* lexer,
   }
 }
 
+void
+read_insert (clexLexer* lexer, q_gum_ast* ast)
+{
+  size_t max_size = 1024;
+  ast->qgum_insert_ast.insert_statement = malloc (max_size);
+  char* out = ast->qgum_insert_ast.insert_statement;
+  char* cur_pos = out;
+  bool in_string = false;
+  bool escaped = false;
+  clexToken token;
+  char start_char = 0;
+  while (true)
+  {
+    // NOTE: as of right now I intend to interpret the executed SQL
+    // literally; thus, we dont use clex_sc.
+    //
+    token = clex (lexer);
+
+    if (token.kind == STRING && in_string && !escaped &&
+        token.lexeme[0] == start_char)
+    {
+      in_string = false;
+    }
+    else if (token.kind == STRING && !in_string)
+    {
+      start_char = token.lexeme[0];
+
+      in_string = true;
+    }
+
+    else if (token.kind == ESCAPE && in_string &&
+             is_escape (token.lexeme))
+    {
+      escaped = true;
+      goto write;
+    }
+    else if (token.kind == SEMICOL && !in_string)
+    {
+      cur_pos[0] = ';';
+      cur_pos[1] = 0;
+      TRACE ("read command: %s", out);
+      return;
+    }
+    else if (token.kind == E_O_F)
+    {
+      ERROR ("UNEXPEcTED EOF");
+      exit (1);
+    }
+
+    if (escaped)
+    {
+      escaped = false;
+    }
+  write:
+  {
+
+    if (token.lexeme == NULL)
+    {
+      continue;
+    };
+
+    int lexeme_size = strlen (token.lexeme);
+    size_t pos = cur_pos - out;
+    if (pos + lexeme_size + 2 >= max_size)
+    {
+      out = realloc (out, max_size *= 2);
+    }
+    strcpy (cur_pos, token.lexeme);
+    cur_pos += lexeme_size;
+    cur_pos[0] = ' ';
+    cur_pos++;
+    TRACE ("Copying: %s", token.lexeme);
+  }
+  };
+}
+
 int
 read_tuple_list (clexLexer* lex, json_t* group, char*** output_array)
 {
@@ -493,18 +579,16 @@ read_tuple_list (clexLexer* lex, json_t* group, char*** output_array)
     }
     else if (token.kind != COMMA)
     {
-      ERROR (
-        "[%ld:%ld] Expected comma or cparen for insert..., got '%s'",
-        token.linen,
-        token.linepos,
-        token.lexeme);
+      ERROR ("[%ld:%ld] Expected comma or cparen for insert..., "
+             "got '%s'",
+             token.linen,
+             token.linepos,
+             token.lexeme);
     }
   }
 
   size_t i = 0;
   json_t* v;
-
-  json_t* valid_cols = json_object_get (group, "insert_columns");
 
   json_t* mandatory_cols =
     json_object_get (group, "mandatory_insert");
@@ -541,6 +625,8 @@ parse (clexLexer* lexer, TokenKind kind, q_gum_ast* ast)
   {
     case CONNECTION:
     {
+
+      ast->type = QGUM_AST_VERB_CONNECT;
       printf ("ENTER\n");
       current = clex_sc (lexer);
       if (current.kind != IDENTIFIER)
@@ -643,6 +729,7 @@ parse (clexLexer* lexer, TokenKind kind, q_gum_ast* ast)
     case CREATE:
     {
 
+      ast->type = QGUM_AST_VERB_CREATE;
       current = clex_sc (lexer);
 
       if (current.kind != IDENTIFIER)
@@ -741,6 +828,7 @@ parse (clexLexer* lexer, TokenKind kind, q_gum_ast* ast)
     }
     case INSERT:
     {
+      ast->type = QGUM_AST_VERB_INSERT;
       current = clex_sc (lexer);
 
       if (current.kind != INTO)
@@ -791,6 +879,8 @@ parse (clexLexer* lexer, TokenKind kind, q_gum_ast* ast)
       char** outstirs;
       int total = read_tuple_list (
         lexer, (*lexical)->qgum_create_ast.create_data, &outstirs);
+      ast->qgum_insert_ast.cols = outstirs;
+      ast->qgum_insert_ast.num_of_cols = total;
 
       current = clex_sc (lexer);
       if (current.kind != VALUES)
@@ -834,30 +924,19 @@ parse (clexLexer* lexer, TokenKind kind, q_gum_ast* ast)
         exit (1);
       }
 
-      current = clex_sc (lexer);
-      if (current.kind != OPARAN)
-      {
-        ERROR ("[%ld:%ld] Expected open paren after connection but "
-               "got '%s'",
-
-               current.linen,
-               current.linepos,
-               current.lexeme);
-        exit (1);
-      }
-
-      current = clex_sc (lexer);
-      exit (1);
+      read_insert (lexer, ast);
       break;
     }
     case E_O_F:
     {
       // Technically unreachable but we use this for unexpected EOF
     UNEXPEcTED_EOF:
+    {
       ERROR (
         "[%ld:%ld]Unexpected EOF", current.linen, current.linepos);
       exit (1);
-      break;
+    }
+    break;
     }
 
     default:
@@ -869,29 +948,55 @@ parse (clexLexer* lexer, TokenKind kind, q_gum_ast* ast)
   }
 }
 
-int
-main (void)
+//
+q_gum_ast*
+read_qgum (char* path, int* count)
 {
-  init_json ();
-  FILE* file = fopen ("./toparse.qgum", "r");
-  fseek (file, 0, SEEK_END);
-  int length = ftell (file);
-  rewind (file);
+  FILE* input_path;
+  char* file_buf;
+  int length = 0;
+  if (path == NULL)
+  {
+    printf ("meow\n");
+    input_path = stdin;
+    char c = 0;
+    int fbufmax = 1024;
+    file_buf = malloc (fbufmax);
+    while ((c = fgetc (stdin)) != EOF)
+    {
+      if (length >= fbufmax)
+      {
+        file_buf = realloc (file_buf, fbufmax *= 2);
+      }
+      file_buf[length++] = c;
+    }
+    length++;
+  }
+  else
+  {
+    input_path = fopen (path, "r");
+
+    fseek (input_path, 0, SEEK_END);
+
+    length = ftell (input_path);
+    rewind (input_path);
+    file_buf = malloc (length + 1);
+    fread (file_buf, 1, length, input_path);
+    file_buf[length] = 0;
+  }
 
   clexLexer* lexer = clexInit ();
   init_lexer (&lexer);
-  char* fileBuf = malloc (length + 1);
 
-  fread (fileBuf, 1, length, file);
+  file_buf[length] = 0;
 
-  fileBuf[length] = 0;
-
-  printf ("%s\n", fileBuf);
-  clexReset (lexer, fileBuf);
+  printf ("%s\n", file_buf);
+  clexReset (lexer, file_buf);
   clexToken token;
 
   int max_ast = 32;
   int cur_ast = 0;
+
   q_gum_ast* asts = calloc (sizeof (q_gum_ast), max_ast);
 
   while ((token = clex_sc (lexer)).kind != E_O_F)
@@ -907,19 +1012,14 @@ main (void)
     printf ("kind: %d\n", token.kind);
     switch (token.kind)
     {
-      case E_O_F:
-      {
-        TRACE ("EOF reached.");
-        return 1;
-      }
       case CREATE:
       case INSERT:
       case CONNECTION:
       {
-        printf ("doing parse\n");
+        k_v_init (asts[cur_ast].params);
+        k_v_reserve (asts[cur_ast].params, 1024);
         parse (lexer, token.kind, &asts[cur_ast++]);
 
-        printf ("doing parse\n");
         break;
       }
       default:
@@ -931,4 +1031,33 @@ main (void)
       }
     }
   }
+
+  for (int i = 0; cur_ast > i; i++)
+  {
+    q_gum_ast ast = asts[i];
+
+    // k_v_clear (ast.params);
+
+    free_kv (&ast.params);
+    if (ast.type == QGUM_AST_VERB_INSERT)
+    {
+      free (ast.qgum_insert_ast.insert_statement);
+
+      char** cols = ast.qgum_insert_ast.cols;
+      free (*cols);
+      free (cols);
+    }
+    else if (ast.type == QGUM_AST_VERB_CONNECT)
+    {
+    }
+    else if (ast.type == QGUM_AST_VERB_CREATE)
+    {
+    }
+  }
+  free (file_buf);
+  clexLexerDestroy (lexer);
+  TRACE ("EOF reached.");
+
+  *count = cur_ast;
+  return asts;
 }
