@@ -5,9 +5,7 @@ main (void)
 {
   init_data ();
   int count = 0;
-  char* tet = "Hello The Word";
-  yy_scan_string (tet);
-
-  yylex ();
+  yylex_state.str = malloc (1024);
+  yylex_state.str_max = 1024;
   q_gum_ast* ast = read_qgum (NULL, &count);
 }

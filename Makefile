@@ -39,7 +39,7 @@ py: test.c
 	$(CC) test.c $(link) $(include) $(cflags) -o $@
 	
 
-$(parsing)/valid_keys.h: $(parsing)/valid_keys.json
+$clang(parsing)/valid_keys.h: $(parsing)/valid_keys.json
 	rm -f $(parsing)/valid_keys.h\
 	cd $(parsing) && echo '#ifndef VALID_KEYS_JSON\n#define VALID_KEYS_JSON\n' > valid_keys.h
 	cd $(parsing) && xxd -i valid_keys.json >> valid_keys.h
@@ -52,9 +52,9 @@ build/qgum: cflags += -lfl
 
 build/lex.o: $(parsing)/qgum.l
 	cd $(parsing) && flex qgum.l
-	clang -c $(parsing)/lex.yy.c -o build/lex.o
+	cc -c $(parsing)/qgum-scanner.c -o build/lex.o
 
-build/qgum: ./src/main.c $(parsing)/parser.c $(parsing)/valid_keys.h $(parsing)/parser.h build/lex.o
+build/qgum: ./src/main.c $(parsing)/parser.c $(parsing)/valid_keys.h $(parsing)/parser.h build/lex.o  $(parsing)/tokens.h
 	$(call check_lib,jansson)
 	$(CC) ./src/main.c $(parsing)/parser.c build/lex.o $(include) $(cflags) $(link) -o $@
 

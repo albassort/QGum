@@ -1,3 +1,4 @@
+#include "./tokens.h"
 #include <stdbool.h>
 #include <jansson.h>
 #include <stdint.h>
@@ -107,33 +108,6 @@ DICT_DEF2 (lex_lookup,
            M_CSTR_OPLIST,
            q_gum_ast*,
            M_PTR_OPLIST)
-
-typedef enum QGUM_TOKEN_KIND
-{
-  E_O_F = -1,
-  OPARAN,
-  CPARAN,
-  COMMA,
-  SEMICOL,
-  IDENTIFIER,
-  ASTERIX,
-  EQUALS,
-  STRING,
-  NUMBER,
-  FLOAT,
-  ESCAPE,
-  WHITESPACE,
-  VALUES,
-  INSERT,
-  INTO,
-  CREATE,
-  TABLE,
-  CONNECTION,
-  WITH,
-  START_COMMENT,
-  END_COMMENT,
-
-} TokenKind;
 
 static inline void
 init_lexer (clexLexer** lexer)

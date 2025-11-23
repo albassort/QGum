@@ -14,6 +14,8 @@
 #include "parser.h"
 #include "../../deps/clex/clex.h"
 #include "./valid_keys.h"
+#include "./lexer.h"
+#include "tokens.h"
 
 static json_t* valid_keys;
 static k_type_t type_lookup;
@@ -62,32 +64,6 @@ free_kv (k_v_t* map)
 
   k_v_reset (*map);
   k_v_clear (*map);
-}
-
-clexToken
-clex_sc (clexLexer* lexer)
-{
-  clexToken result;
-  result = clex (lexer);
-  if (result.kind == START_COMMENT)
-  {
-
-    while ((result = clex (lexer)).kind != END_COMMENT)
-    {
-      if (result.kind == E_O_F)
-      {
-        ERROR ("[%ld:%ld]Comment unterminated",
-               result.linen,
-               result.linepos);
-        exit (1);
-      }
-    }
-
-    result = clex (lexer);
-    return result;
-  };
-
-  return result;
 }
 
 int
@@ -199,149 +175,74 @@ is_escape (char* escape)
   return (count % 2) == 1;
 }
 
-static inline void
-agregate_value (clexLexer* lexer,
-                char** str,
-                int* max_length,
-                int* length_written,
-                char start_char)
-{
-  clexToken token;
-  bool escaped = false;
-  *length_written = 0;
-  while (true)
-  {
-
-    token = clex_sc (lexer);
-    TRACE ("in agregate_value string, got %s kind: %d",
-           token.lexeme,
-           token.kind);
-
-    if (token.kind == E_O_F)
-    {
-      ERROR ("[%ld:%ld]Unexpected EOF", token.linen, token.linepos);
-      exit (1);
-    }
-
-    if (token.kind == ESCAPE && is_escape (token.lexeme))
-    {
-      TRACE ("ESCAPED!");
-      escaped = true;
-      continue;
-    }
-    else if (token.kind == STRING && !escaped &&
-             token.lexeme[0] == start_char)
-    {
-
-      (*str)[(*length_written) + 1] = 0;
-      return;
-    }
-
-    else
-    {
-      TRACE ("Copying");
-      // TODO: implement length in clex;
-      int length = strlen (token.lexeme);
-      if (length + 1 + *length_written > *max_length)
-      {
-        *str = realloc (*str, (*max_length) *= 2);
-      }
-
-      printf ("copying: %s\n", token.lexeme);
-
-      strcpy ((*str) + *length_written, token.lexeme);
-
-      (*length_written) += length + 1;
-      (*str)[*length_written - 1] = ' ';
-    }
-
-    if (escaped)
-      escaped = false;
-  }
-}
-
 void
-parse_kv (clexLexer* lexer,
-          q_gum_ast* AST,
-          int* total_read,
-          json_t* group)
+parse_kv (q_gum_ast* AST, int* total_read, json_t* group)
 {
 
-  clexToken token;
+  int token;
 
   static const int default_max_length = 1024;
   while (true)
   {
     char* key = malloc (default_max_length);
     char* value = malloc (default_max_length);
-    token = clex_sc (lexer);
-    FIXME ("read key: %s", token.lexeme);
-    if (token.kind != IDENTIFIER)
+    token = yylex ();
+    FIXME ("read key: %s", yylex_state.str);
+    if (token != IDENTIFIER)
     {
     }
-    strcpy (key, token.lexeme);
+    strcpy (key, yylex_state.str);
 
-    token = clex_sc (lexer);
-    FIXME ("reading equals: %s", token.lexeme);
+    token = yylex ();
+    FIXME ("reading equals: %s", yylex_state.str);
 
-    if (token.kind != EQUALS)
+    if (token != EQUALS)
     {
     }
 
     TokenKind value_type;
-    token = clex_sc (lexer);
+    token = yylex ();
     // FIXME ("reading value: %s, %d", token.lexeme, token.);
 
-    switch (token.kind)
+    switch (token)
     {
       case STRING:
       {
-        int max_length = default_max_length;
-        int length_written = 0;
-        agregate_value (lexer,
-                        &value,
-                        &max_length,
-                        &length_written,
-                        token.lexeme[0]);
 
-        TRACE ("copied string of length %d, %.*s",
-               length_written,
-               length_written,
-               value);
-        printf ("%s\n", value);
+        TRACE ("copied string of length %d, %s",
+               yylex_state.str_length,
+               yylex_state.str);
+        strcpy (value, yylex_state.str);
         break;
       }
       case FLOAT:
       case NUMBER:
       {
-        strcpy (value, token.lexeme);
+        strcpy (value, yylex_state.str);
         break;
       }
       default:
       {
-        ERROR ("[%ld,%ld] Expected string, number, float, got %s",
-               token.linen,
-               token.linepos,
-               token.lexeme);
+        ERROR ("[%ld] Expected string, number, float, got %s",
+               yylineno,
+               yylex_state.str);
         exit (1);
       }
     }
 
-    value_type = token.kind;
+    TRACE ("read value: %s\n", value);
+    value_type = token;
 
-    token = clex_sc (lexer);
-    FIXME ("reading comma: %s", token.lexeme);
+    token = yylex ();
+    FIXME ("reading comma: %s", yytext);
 
-    if (token.kind != COMMA && token.kind != CPARAN)
+    if (token != COMMA && token != CPARAN)
     {
-      ERROR ("[%ld,%ld] Expected comma, got %s",
-             token.linen,
-             token.linepos,
-             token.lexeme);
+      ERROR ("[%ld Expected comma, got %s", yylineno, yytext);
       exit (1);
     }
 
-    bool end = token.kind == CPARAN;
+    bool end = token == CPARAN;
 
     for (char* p = key; *p != 0; p++)
     {
@@ -354,8 +255,7 @@ parse_kv (clexLexer* lexer,
 
     if (correct_type == QGUM_AST_TYPE_INVALID)
     {
-      ERROR (
-        "[%ld,%ld] Unknown key: %s", token.linen, token.linepos, key);
+      ERROR ("[%ld] Unknown key: %s", yylineno, yylex_state.str);
       exit (1);
     }
     // type checking
@@ -366,11 +266,9 @@ parse_kv (clexLexer* lexer,
       {
         if (value_type == STRING)
         {
-          ERROR (
-            "[%ld,%ld] expected INT or FLOAT for %s but got string",
-            token.linen,
-            token.linepos,
-            key);
+          ERROR ("[%ld expected INT or FLOAT for %s but got string",
+                 yylineno,
+                 key);
           exit (1);
         }
         break;
@@ -379,21 +277,17 @@ parse_kv (clexLexer* lexer,
       {
         if (value_type == STRING)
         {
-          ERROR (
-            "[%ld,%ld] expected INT or FLOAT for %s but got string",
-            token.linen,
-            token.linepos,
-            key);
+          ERROR ("[%ld] expected INT or FLOAT for %s but got string",
+                 yylineno,
+                 key);
           exit (1);
         }
         char c = value[0];
         if (c == '-')
         {
-          ERROR (
-            "[%ld,%ld] only positive integers are allowed for %s!",
-            token.linen,
-            token.linepos,
-            key);
+          ERROR ("[%ld] only positive integers are allowed for %s!",
+                 yylineno,
+                 key);
           exit (1);
         }
         break;
@@ -405,9 +299,8 @@ parse_kv (clexLexer* lexer,
 
         if (value_type != STRING)
         {
-          ERROR ("[%ld,%ld] Expected string for %s got %s",
-                 token.linen,
-                 token.linepos,
+          ERROR ("[%ld] Expected string for %s got %s",
+                 yylineno,
                  key,
                  value);
         }
@@ -449,85 +342,22 @@ parse_kv (clexLexer* lexer,
     }
   }
 }
+// forward decs
+void
+switch_read_stmt (void);
+void
+end_read_stmt (void);
 
 void
-read_insert (clexLexer* lexer, q_gum_ast* ast)
+read_insert (q_gum_ast* ast)
 {
-  size_t max_size = 1024;
-  ast->qgum_insert_ast.insert_statement = malloc (max_size);
-  char* out = ast->qgum_insert_ast.insert_statement;
-  char* cur_pos = out;
-  bool in_string = false;
-  bool escaped = false;
-  clexToken token;
-  char start_char = 0;
-  while (true)
-  {
-    // NOTE: as of right now I intend to interpret the executed SQL
-    // literally; thus, we dont use clex_sc.
-    //
-    token = clex (lexer);
-
-    if (token.kind == STRING && in_string && !escaped &&
-        token.lexeme[0] == start_char)
-    {
-      in_string = false;
-    }
-    else if (token.kind == STRING && !in_string)
-    {
-      start_char = token.lexeme[0];
-
-      in_string = true;
-    }
-
-    else if (token.kind == ESCAPE && in_string &&
-             is_escape (token.lexeme))
-    {
-      escaped = true;
-      goto write;
-    }
-    else if (token.kind == SEMICOL && !in_string)
-    {
-      cur_pos[0] = ';';
-      cur_pos[1] = 0;
-      TRACE ("read command: %s", out);
-      return;
-    }
-    else if (token.kind == E_O_F)
-    {
-      ERROR ("UNEXPEcTED EOF");
-      exit (1);
-    }
-
-    if (escaped)
-    {
-      escaped = false;
-    }
-  write:
-  {
-
-    if (token.lexeme == NULL)
-    {
-      continue;
-    };
-
-    int lexeme_size = strlen (token.lexeme);
-    size_t pos = cur_pos - out;
-    if (pos + lexeme_size + 2 >= max_size)
-    {
-      out = realloc (out, max_size *= 2);
-    }
-    strcpy (cur_pos, token.lexeme);
-    cur_pos += lexeme_size;
-    cur_pos[0] = ' ';
-    cur_pos++;
-    TRACE ("Copying: %s", token.lexeme);
-  }
-  };
+  switch_read_stmt ();
+  yylex ();
+  end_read_stmt ();
 }
 
 int
-read_tuple_list (clexLexer* lex, json_t* group, char*** output_array)
+read_tuple_list (json_t* group, char*** output_array)
 {
   int max_size = 1024;
   int max_columns = 32;
@@ -536,34 +366,30 @@ read_tuple_list (clexLexer* lex, json_t* group, char*** output_array)
 
   char* write_pos = output;
   int count = 0;
-  clexToken token;
+  TokenKind token;
+  char* lexeme = yylex_state.str;
   while (true)
   {
     TRACE ("Tuple reading %c", count);
-    token = clex_sc (lex);
-    if (token.kind == CPARAN)
+    token = yylex ();
+    if (token == CPARAN)
     {
-      ERROR ("[%ld:%ld]%s Expected columns for insert...",
-             token.linen,
-             token.linepos);
+      ERROR ("[%ld] Expected columns for insert...", yylineno);
       exit (1);
     }
-    else if (token.kind != IDENTIFIER)
+    else if (token != IDENTIFIER)
     {
-      ERROR ("[%ld:%ld]%s Expected identifier got: %s",
-             token.linen,
-             token.linepos,
-             token.lexeme);
+      ERROR ("[%ld]%s Expected identifier got: %s", yylineno, lexeme);
       exit (1);
     }
 
-    size_t length = strlen (token.lexeme) + 1;
+    size_t length = yylex_state.str_length + 1;
     if (write_pos - output >= max_size)
     {
       output = realloc (output, max_size *= 2);
     }
 
-    strcpy (write_pos, token.lexeme);
+    strcpy (write_pos, lexeme);
     if (count >= max_columns)
     {
       output = realloc (output_array, max_columns *= 2);
@@ -571,19 +397,18 @@ read_tuple_list (clexLexer* lex, json_t* group, char*** output_array)
     (*output_array)[count++] = write_pos;
     write_pos += length;
 
-    token = clex_sc (lex);
+    token = yylex ();
 
-    if (token.kind == CPARAN)
+    if (token == CPARAN)
     {
       break;
     }
-    else if (token.kind != COMMA)
+    else if (token != COMMA)
     {
-      ERROR ("[%ld:%ld] Expected comma or cparen for insert..., "
+      ERROR ("[%ld] Expected comma or cparen for insert..., "
              "got '%s'",
-             token.linen,
-             token.linepos,
-             token.lexeme);
+             yylineno,
+             lexeme);
     }
   }
 
@@ -618,9 +443,11 @@ read_tuple_list (clexLexer* lex, json_t* group, char*** output_array)
 }
 
 void
-parse (clexLexer* lexer, TokenKind kind, q_gum_ast* ast)
+parse (TokenKind kind, q_gum_ast* ast)
 {
-  clexToken current;
+  TokenKind current;
+
+  char* lexeme = yylex_state.str;
   switch (kind)
   {
     case CONNECTION:
@@ -628,13 +455,11 @@ parse (clexLexer* lexer, TokenKind kind, q_gum_ast* ast)
 
       ast->type = QGUM_AST_VERB_CONNECT;
       printf ("ENTER\n");
-      current = clex_sc (lexer);
-      if (current.kind != IDENTIFIER)
-      {
+      current = yylex ();
 
-        ERROR ("[%ld:%ld]Expected Identifier",
-               current.linen,
-               current.linepos);
+      if (current != IDENTIFIER)
+      {
+        ERROR ("[%ld]Expected Identifier", yylineno);
       }
 
       json_t* databse_objects =
@@ -647,79 +472,66 @@ parse (clexLexer* lexer, TokenKind kind, q_gum_ast* ast)
       }
 
       // normalize string
-      for (char* p = current.lexeme; *p != 0; p++)
+      for (char* p = lexeme; *p != 0; p++)
       {
         *p = toupper (*p);
       }
 
       json_t* valid_params =
-        json_object_get (databse_objects, current.lexeme);
+        json_object_get (databse_objects, lexeme);
 
       if (valid_params == NULL)
       {
 
-        ERROR ("[%ld:%ld]%s is not a valid database.",
-               current.linen,
-               current.linepos,
-               current.lexeme);
+        ERROR ("[%ld]%s is not a valid database.", yylineno, lexeme);
         exit (1);
       }
 
       db_connection_type database =
-        match_associated_array (current.lexeme,
+        match_associated_array (lexeme,
                                 database_strings,
                                 (const int*) database_enums,
                                 NUMBER_OF_DATABASES);
 
       ast->qgum_connection_ast.db = database;
 
-      current = clex_sc (lexer);
-      if (current.kind != IDENTIFIER)
+      current = yylex ();
+      if (current != IDENTIFIER)
       {
-        if (current.kind == E_O_F)
+        if (current == E_O_F)
           goto UNEXPEcTED_EOF;
-        ERROR ("[%ld:%ld]Expected Identifier",
-               current.linen,
-               current.linepos);
+        ERROR ("[%ld]Expected Identifier", yylineno);
         exit (1);
       }
       ast->has_var_name = true;
-      strcpy (ast->varname, current.lexeme);
+      strcpy (ast->varname, lexeme);
 
       q_gum_ast** ast_Loopup =
         lex_lookup_safe_get (lex_lookup, ast->varname);
       if (*ast_Loopup != NULL)
       {
-        if (current.kind == E_O_F)
+        if (current == E_O_F)
           goto UNEXPEcTED_EOF;
-        ERROR ("[%ld:%ld]Identifier %s already taken",
-               current.linen,
-               current.linepos,
-               ast->varname);
+        ERROR (
+          "[%ld]Identifier %s already taken", yylineno, ast->varname);
         exit (1);
       }
 
-      current = clex_sc (lexer);
-      if (current.kind != OPARAN)
+      current = yylex ();
+      if (current != OPARAN)
       {
-        if (current.kind == E_O_F)
+        if (current == E_O_F)
           goto UNEXPEcTED_EOF;
 
-        ERROR ("[%ld:%ld]expected '(' got  %s",
-               current.linen,
-               current.linepos,
-               ast->varname);
+        ERROR ("[%ld]expected '(' got  %s", yylineno, ast->varname);
       }
 
       int total_read = 0;
-      parse_kv (lexer, ast, &total_read, valid_params);
-      current = clex_sc (lexer);
-      if (current.kind != SEMICOL)
+      parse_kv (ast, &total_read, valid_params);
+      current = yylex ();
+      if (current != SEMICOL)
       {
-        ERROR ("[%ld:%ld]expected ';' got  %s",
-               current.linen,
-               current.linepos,
-               ast->varname);
+        ERROR ("[%ld]expected ';' got  %s", yylineno, ast->varname);
 
         exit (1);
       }
@@ -730,94 +542,80 @@ parse (clexLexer* lexer, TokenKind kind, q_gum_ast* ast)
     {
 
       ast->type = QGUM_AST_VERB_CREATE;
-      current = clex_sc (lexer);
+      current = yylex ();
 
-      if (current.kind != IDENTIFIER)
+      if (current != IDENTIFIER)
       {
-        if (current.kind == E_O_F)
+        if (current == E_O_F)
           goto UNEXPEcTED_EOF;
-        ERROR ("[%ld:%ld]Expected Identifier",
-               current.linen,
-               current.linepos);
+        ERROR ("[%ld]Expected Identifier", yylineno);
         exit (1);
       }
 
-      for (char* p = current.lexeme; *p != 0; p++)
+      for (char* p = lexeme; *p != 0; p++)
       {
         *p = toupper (*p);
       }
 
       json_t* creates = json_object_get (valid_keys, "VALID_CREATE");
 
-      json_t* create_obj = json_object_get (creates, current.lexeme);
+      json_t* create_obj = json_object_get (creates, lexeme);
 
-      if (current.kind != IDENTIFIER)
+      if (current != IDENTIFIER)
       {
-        if (current.kind == E_O_F)
+        if (current == E_O_F)
           goto UNEXPEcTED_EOF;
-        ERROR ("[%ld:%ld]Expected Identifier",
-               current.linen,
-               current.linepos);
+        ERROR ("[%ld]Expected Identifier", yylineno);
         exit (1);
       }
 
       if (create_obj == NULL)
       {
-        ERROR ("[%ld:%ld]Unknown create type: %s",
-               current.linen,
-               current.linepos,
-               current.lexeme);
+        ERROR ("[%ld]Unknown create type: %s", yylineno, lexeme);
         exit (1);
       }
 
       qgum_create_types type =
-        match_associated_array (current.lexeme,
+        match_associated_array (lexeme,
                                 create_strings,
                                 (int*) create_to_enum,
                                 NUMBER_OF_CREATES);
 
       ast->qgum_create_ast.create_type = type;
 
-      current = clex_sc (lexer);
+      current = yylex ();
 
-      if (current.kind != IDENTIFIER)
+      if (current != IDENTIFIER)
       {
-        if (current.kind == E_O_F)
+        if (current == E_O_F)
           goto UNEXPEcTED_EOF;
-        ERROR ("[%ld:%ld]Expected Identifier",
-               current.linen,
-               current.linepos);
+        ERROR ("[%ld]Expected Identifier", yylineno);
         exit (1);
       }
-      TRACE ("varname: %s", current.lexeme);
+      TRACE ("varname: %s", lexeme);
 
       ast->has_var_name = true;
-      strcpy (ast->varname, current.lexeme);
+      strcpy (ast->varname, lexeme);
 
       q_gum_ast** ast_Loopup =
         lex_lookup_safe_get (lex_lookup, ast->varname);
 
       if (*ast_Loopup != NULL)
       {
-        ERROR ("[%ld:%ld]Identifier %s already taken",
-               current.linen,
-               current.linepos,
-               ast->varname);
+        ERROR (
+          "[%ld]Identifier %s already taken", yylineno, ast->varname);
         exit (1);
       }
 
-      current = clex_sc (lexer);
+      current = yylex ();
 
       int total_read = 0;
-      parse_kv (lexer, ast, &total_read, create_obj);
+      parse_kv (ast, &total_read, create_obj);
 
-      current = clex_sc (lexer);
-      if (current.kind != SEMICOL)
+      current = yylex ();
+      if (current != SEMICOL)
       {
-        ERROR ("[%ld:%ld]expected ';' got  %s",
-               current.linen,
-               current.linepos,
-               ast->varname);
+        ERROR ("[%ld]expected ';' got  %s", yylineno, ast->varname);
 
         exit (1);
       }
@@ -829,102 +627,86 @@ parse (clexLexer* lexer, TokenKind kind, q_gum_ast* ast)
     case INSERT:
     {
       ast->type = QGUM_AST_VERB_INSERT;
-      current = clex_sc (lexer);
+      current = yylex ();
 
-      if (current.kind != INTO)
+      if (current != INTO)
       {
-        if (current.kind == E_O_F)
+        if (current == E_O_F)
           goto UNEXPEcTED_EOF;
-        ERROR ("[%ld:%ld]Expected Identifier",
-               current.linen,
-               current.linepos);
+        ERROR ("[%ld]Expected Identifier", yylineno);
         exit (1);
       }
 
-      current = clex_sc (lexer);
-      if (current.kind != IDENTIFIER)
+      current = yylex ();
+      if (current != IDENTIFIER)
       {
-        if (current.kind == E_O_F)
+        if (current == E_O_F)
           goto UNEXPEcTED_EOF;
-        ERROR ("[%ld:%ld]Expected Identifier",
-               current.linen,
-               current.linepos);
+        ERROR ("[%ld]Expected Identifier", yylineno);
         exit (1);
       }
 
-      q_gum_ast** lexical =
-        lex_lookup_safe_get (lex_lookup, current.lexeme);
+      q_gum_ast** lexical = lex_lookup_safe_get (lex_lookup, lexeme);
 
       if ((*lexical) == NULL)
       {
-        ERROR ("[%ld:%ld]Identifier %s doesn't exist",
-               current.linen,
-               current.linepos,
-               current.lexeme);
+        ERROR ("[%ld]Identifier %s doesn't exist", yylineno, lexeme);
         exit (1);
       }
 
       ast->qgum_insert_ast.ast = (struct q_gum_ast*) *lexical;
 
-      current = clex_sc (lexer);
-      if (current.kind != OPARAN)
+      current = yylex ();
+      if (current != OPARAN)
       {
-        ERROR ("[%ld:%ld]Expected open parentheses got %s",
-               current.linen,
-               current.linepos,
-               current.lexeme);
+        ERROR (
+          "[%ld]Expected open parentheses got %s", yylineno, lexeme);
         exit (1);
       }
 
       char** outstirs;
       int total = read_tuple_list (
-        lexer, (*lexical)->qgum_create_ast.create_data, &outstirs);
+        (*lexical)->qgum_create_ast.create_data, &outstirs);
       ast->qgum_insert_ast.cols = outstirs;
       ast->qgum_insert_ast.num_of_cols = total;
 
-      current = clex_sc (lexer);
-      if (current.kind != VALUES)
+      current = yylex ();
+      if (current != VALUES)
       {
-        ERROR ("[%ld:%ld] expected values after insert, got '%s'",
-               current.linen,
-               current.linepos,
-               current.lexeme);
+        ERROR ("[%ld] expected values after insert, got '%s'",
+               yylineno,
+               lexeme);
         exit (1);
       }
 
-      current = clex_sc (lexer);
-      if (current.kind != WITH)
+      current = yylex ();
+      if (current != WITH)
       {
-        ERROR ("[%ld:%ld] expected with after values, got '%s'",
-               current.linen,
-               current.linepos,
-               current.lexeme);
+        ERROR ("[%ld] expected with after values, got '%s'",
+               yylineno,
+               lexeme);
         exit (1);
       }
 
-      current = clex_sc (lexer);
-      if (current.kind != IDENTIFIER)
+      current = yylex ();
+      if (current != IDENTIFIER)
       {
-        ERROR ("[%ld:%ld] expected identifier after with got '%s'",
-               current.linen,
-               current.linepos,
-               current.lexeme);
+        ERROR ("[%ld] expected identifier after with got '%s'",
+               yylineno,
+               lexeme);
         exit (1);
       }
 
       q_gum_ast** connection =
-        lex_lookup_safe_get (lex_lookup, current.lexeme);
+        lex_lookup_safe_get (lex_lookup, lexeme);
 
       if ((*connection) == NULL)
       {
-        ERROR ("[%ld:%ld]Identifier %s doesn't exist",
-               current.linen,
-               current.linepos,
-               current.lexeme);
+        ERROR ("[%ld]Identifier %s doesn't exist", yylineno, lexeme);
         exit (1);
       }
 
-      read_insert (lexer, ast);
+      read_insert (ast);
       break;
     }
     case E_O_F:
@@ -932,8 +714,7 @@ parse (clexLexer* lexer, TokenKind kind, q_gum_ast* ast)
       // Technically unreachable but we use this for unexpected EOF
     UNEXPEcTED_EOF:
     {
-      ERROR (
-        "[%ld:%ld]Unexpected EOF", current.linen, current.linepos);
+      ERROR ("[%ld]Unexpected EOF", yylineno);
       exit (1);
     }
     break;
@@ -952,65 +733,33 @@ parse (clexLexer* lexer, TokenKind kind, q_gum_ast* ast)
 q_gum_ast*
 read_qgum (char* path, int* count)
 {
-  FILE* input_path;
+  yyin = stdin;
   char* file_buf;
-  int length = 0;
-  if (path == NULL)
-  {
-    printf ("meow\n");
-    input_path = stdin;
-    char c = 0;
-    int fbufmax = 1024;
-    file_buf = malloc (fbufmax);
-    while ((c = fgetc (stdin)) != EOF)
-    {
-      if (length >= fbufmax)
-      {
-        file_buf = realloc (file_buf, fbufmax *= 2);
-      }
-      file_buf[length++] = c;
-    }
-    length++;
-  }
-  else
-  {
-    input_path = fopen (path, "r");
 
-    fseek (input_path, 0, SEEK_END);
-
-    length = ftell (input_path);
-    rewind (input_path);
-    file_buf = malloc (length + 1);
-    fread (file_buf, 1, length, input_path);
-    file_buf[length] = 0;
-  }
-
-  clexLexer* lexer = clexInit ();
-  init_lexer (&lexer);
-
-  file_buf[length] = 0;
-
-  printf ("%s\n", file_buf);
-  clexReset (lexer, file_buf);
-  clexToken token;
-
+  TokenKind token;
   int max_ast = 32;
   int cur_ast = 0;
+  char** lexeme = &yylex_state.str;
 
   q_gum_ast* asts = calloc (sizeof (q_gum_ast), max_ast);
 
-  while ((token = clex_sc (lexer)).kind != E_O_F)
+  while ((token = yylex ()) != E_O_F)
   {
+
+    printf ("\nkind: %d, text : %d, str: %s\n",
+            token,
+            yylex_state.str_length,
+            *lexeme);
     if (cur_ast == max_ast)
       asts = realloc (asts, max_ast *= 2);
 
-    for (char* p = token.lexeme; *p != 0; p++)
+    for (char* p = lexeme; *p != 0; p++)
     {
       *p = toupper (*p);
     }
 
-    printf ("kind: %d\n", token.kind);
-    switch (token.kind)
+    printf ("%d<- conn,  we have %d\n", CONNECTION, token);
+    switch (token)
     {
       case CREATE:
       case INSERT:
@@ -1018,15 +767,15 @@ read_qgum (char* path, int* count)
       {
         k_v_init (asts[cur_ast].params);
         k_v_reserve (asts[cur_ast].params, 1024);
-        parse (lexer, token.kind, &asts[cur_ast++]);
+        parse (token, &asts[cur_ast++]);
 
         break;
       }
       default:
       {
         ERROR (
-          "Highest level must be CREATE, INSERT, CONNECT\n, got %s",
-          token.lexeme);
+          "Highest level must be CREATE, INSERT, CONNECT, got %s\n",
+          *lexeme);
         exit (1);
       }
     }
@@ -1054,8 +803,7 @@ read_qgum (char* path, int* count)
     {
     }
   }
-  free (file_buf);
-  clexLexerDestroy (lexer);
+
   TRACE ("EOF reached.");
 
   *count = cur_ast;
