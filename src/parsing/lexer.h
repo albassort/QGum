@@ -474,7 +474,7 @@ extern int yylex (void);
 #undef yyTABLES_NAME
 #endif
 
-#line 202 "qgum.l"
+#line 206 "qgum.l"
 
 
 #line 481 "lexer.h"

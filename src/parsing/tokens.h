@@ -2,7 +2,6 @@
 #define QGUM_TOK
 #include <stdbool.h>
 #include <stdlib.h>
-#include <stdio.h>
 #include <string.h>
 
 typedef enum QGUM_TOKEN_KIND
@@ -27,8 +26,7 @@ typedef enum QGUM_TOKEN_KIND
   TABLE,
   CONNECTION,
   WITH,
-  START_COMMENT,
-  END_COMMENT,
+  SHOW
 
 } TokenKind;
 
@@ -63,7 +61,6 @@ resize_str (int length, bool append)
 static inline void
 set_str (char* str, int length)
 {
-  printf ("\nENTER, str :%s", str);
   resize_str (length, false);
   strcpy (yylex_state.str, str);
   yylex_state.str_length = length;

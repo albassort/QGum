@@ -12,10 +12,10 @@
 #include <jansson.h>
 #include <unistd.h>
 #include "parser.h"
-#include "../../deps/clex/clex.h"
 #include "./valid_keys.h"
 #include "./lexer.h"
 #include "tokens.h"
+#include <stdio.h>
 
 static json_t* valid_keys;
 static k_type_t type_lookup;
@@ -382,7 +382,6 @@ read_tuple_list (json_t* group, char*** output_array)
       ERROR ("[%ld]%s Expected identifier got: %s", yylineno, lexeme);
       exit (1);
     }
-
     size_t length = yylex_state.str_length + 1;
     if (write_pos - output >= max_size)
     {
@@ -709,6 +708,42 @@ parse (TokenKind kind, q_gum_ast* ast)
       read_insert (ast);
       break;
     }
+    case SHOW:
+    {
+      current = yylex ();
+      if (current != IDENTIFIER)
+      {
+        ERROR (
+          "[%ld] Identifer expected %s\n", yylineno, ast->varname);
+        exit (1);
+      }
+
+      q_gum_ast** ast_Loopup =
+        lex_lookup_safe_get (lex_lookup, lexeme);
+
+      if (*ast_Loopup == NULL)
+      {
+        ERROR ("[%ld]Lookup failed for %s, the identifer after must "
+               "be a varaible.",
+               yylineno,
+               ast->varname);
+        exit (1);
+      };
+
+      ast->show_data.plot_to_show = (struct q_gum_ast*) *ast_Loopup;
+
+      current = yylex ();
+
+      if (current != SEMICOL)
+      {
+        ERROR (
+          "[%ld] Semicol expected got %s\n", yylineno, ast->varname);
+        exit (1);
+      }
+      ast->type = QGUM_AST_VERB_SHOW;
+      break;
+    }
+
     case E_O_F:
     {
       // Technically unreachable but we use this for unexpected EOF
@@ -729,59 +764,10 @@ parse (TokenKind kind, q_gum_ast* ast)
   }
 }
 
-//
-q_gum_ast*
-read_qgum (char* path, int* count)
+void
+free_ast (q_gum_ast* asts, int count)
 {
-  yyin = stdin;
-  char* file_buf;
-
-  TokenKind token;
-  int max_ast = 32;
-  int cur_ast = 0;
-  char** lexeme = &yylex_state.str;
-
-  q_gum_ast* asts = calloc (sizeof (q_gum_ast), max_ast);
-
-  while ((token = yylex ()) != E_O_F)
-  {
-
-    printf ("\nkind: %d, text : %d, str: %s\n",
-            token,
-            yylex_state.str_length,
-            *lexeme);
-    if (cur_ast == max_ast)
-      asts = realloc (asts, max_ast *= 2);
-
-    for (char* p = lexeme; *p != 0; p++)
-    {
-      *p = toupper (*p);
-    }
-
-    printf ("%d<- conn,  we have %d\n", CONNECTION, token);
-    switch (token)
-    {
-      case CREATE:
-      case INSERT:
-      case CONNECTION:
-      {
-        k_v_init (asts[cur_ast].params);
-        k_v_reserve (asts[cur_ast].params, 1024);
-        parse (token, &asts[cur_ast++]);
-
-        break;
-      }
-      default:
-      {
-        ERROR (
-          "Highest level must be CREATE, INSERT, CONNECT, got %s\n",
-          *lexeme);
-        exit (1);
-      }
-    }
-  }
-
-  for (int i = 0; cur_ast > i; i++)
+  for (int i = 0; count > i; i++)
   {
     q_gum_ast ast = asts[i];
 
@@ -801,6 +787,59 @@ read_qgum (char* path, int* count)
     }
     else if (ast.type == QGUM_AST_VERB_CREATE)
     {
+    }
+  }
+}
+//
+q_gum_ast*
+read_qgum (char* path, int* count)
+{
+  yyin = stdin;
+  char* file_buf;
+
+  TokenKind token;
+  int max_ast = 32;
+  int cur_ast = 0;
+  char* lexeme = yylex_state.str;
+
+  q_gum_ast* asts = calloc (sizeof (q_gum_ast), max_ast);
+
+  while ((token = yylex ()) != E_O_F)
+  {
+
+    printf ("\nkind: %d, text : %d, str: %s\n",
+            token,
+            yylex_state.str_length,
+            lexeme);
+    if (cur_ast == max_ast)
+      asts = realloc (asts, max_ast *= 2);
+
+    for (char* p = lexeme; *p != 0; p++)
+    {
+      *p = toupper (*p);
+    }
+
+    printf ("%d<- conn,  we have %d\n", CONNECTION, token);
+    switch (token)
+    {
+      case CREATE:
+      case INSERT:
+      case CONNECTION:
+      case SHOW:
+      {
+        k_v_init (asts[cur_ast].params);
+        k_v_reserve (asts[cur_ast].params, 1024);
+        parse (token, &asts[cur_ast++]);
+
+        break;
+      }
+      default:
+      {
+        ERROR (
+          "Highest level must be CREATE, INSERT, CONNECT, got %s\n",
+          *lexeme);
+        exit (1);
+      }
     }
   }
 

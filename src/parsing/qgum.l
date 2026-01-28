@@ -36,7 +36,7 @@
 <INITIAL,read_statement>(\') {
   yylex_state.str_type = '\'';
   yylex_state.str_length = 0;
-  printf("STR START");
+  // printf("STR START");
   prev_state = YY_START;
   BEGIN(in_string);
 }
@@ -101,13 +101,17 @@
 }
 
 <INITIAL>[iI][nN][sS][eE][rR][tT] { 
-
   set_str(yytext, yyleng);
   return INSERT; 
 }
 
+<INITIAL>[sS][hH][oO][wW] {
+  set_str(yytext, yyleng);
+  return SHOW; 
+}
+
 <INITIAL>[a-zA-Z_]([a-zA-Z_]|[0-9])* {
-  printf("HERE: %s", yytext);
+  // printf("HERE: %s", yytext);
   set_str(yytext, yyleng);
   return IDENTIFIER; 
 }
@@ -141,7 +145,7 @@
   }
   else{
 
-    printf("ELSE!");
+    // printf("ELSE!");
     append_str(yytext, yyleng);
   }
 }
@@ -164,7 +168,7 @@
 
 
 <in_string>(.) {
-  printf("READING: %c\n", yytext[0]);
+  // printf("READING: %c\n", yytext[0]);
   append_str(yytext, yyleng);
 }
 

@@ -19,4 +19,4 @@ insert into varname1(x,y) values with pg_conn
       char
   LIMIT 100;
 
---SHOW varname1();
+SHOW varname1;

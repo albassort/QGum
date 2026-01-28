@@ -3,7 +3,6 @@
 #include <jansson.h>
 #include <stdint.h>
 #include <m-dict.h>
-#include "../../deps/clex/clex.h"
 
 #ifndef QGUM_PARSER
 #define QGUM_PARSER
@@ -25,6 +24,7 @@ typedef enum
   QGUM_AST_VERB_CONNECT = 7,
   QGUM_AST_VERB_CREATE = 8,
   QGUM_AST_VERB_INSERT = 9,
+  QGUM_AST_VERB_SHOW = 10
 } qgum_key_types;
 
 typedef enum
@@ -99,6 +99,11 @@ typedef struct
       uint8_t data;
       uint64_t length;
     } raw_data;
+
+    struct
+    {
+      struct q_gum_ast* plot_to_show;
+    } show_data;
   };
   qgum_key_types type;
 } q_gum_ast;
@@ -108,49 +113,6 @@ DICT_DEF2 (lex_lookup,
            M_CSTR_OPLIST,
            q_gum_ast*,
            M_PTR_OPLIST)
-
-static inline void
-init_lexer (clexLexer** lexer)
-{
-
-  clexRegisterKind (*lexer, "/\\*", START_COMMENT);
-  clexRegisterKind (*lexer, "\\*/", END_COMMENT);
-  clexRegisterKind (*lexer, "\\\\+", ESCAPE);
-  clexRegisterKind (*lexer, ",", COMMA);
-  clexRegisterKind (*lexer, "[iI][nN][tT][oO]", INTO);
-  clexRegisterKind (*lexer, "[wW][iI][tT][hH]", WITH);
-  clexRegisterKind (*lexer, "[cC][rR][eE][aA][tT][eE]", CREATE);
-  clexRegisterKind (*lexer, "[tT][aA][bB][lL][eE]", TABLE);
-  clexRegisterKind (
-    *lexer, "[cC][oO][nN][nN][eE][cC][tT]", CONNECTION);
-  clexRegisterKind (*lexer, "[iI][nN][sS][eE][rR][tT]", INSERT);
-  clexRegisterKind (*lexer, "[vV][aA][lL][uU][eE][sS]", VALUES);
-
-  clexRegisterKind (*lexer, "\\(", OPARAN);
-  clexRegisterKind (*lexer, "\\)", CPARAN);
-  clexRegisterKind (*lexer, ";", SEMICOL);
-  clexRegisterKind (*lexer, "=", EQUALS);
-
-  clexRegisterKind (*lexer, "'", STRING);
-  clexRegisterKind (*lexer, "`", STRING);
-  clexRegisterKind (*lexer, "\"", STRING);
-  clexRegisterKind (
-    *lexer, "[a-zA-Z_]([a-zA-Z_]|[0-9])*", IDENTIFIER);
-  clexRegisterKind (*lexer, "[+-]?[0-9]", NUMBER);
-  clexRegisterKind (*lexer, "[+-]?([0-9]*[.])?[0-9]+", FLOAT);
-  clexRegisterKind (*lexer, "[\\\\*]", ASTERIX);
-
-  // clexReset (*lexer, "insert INTO TABLE\nTEST(A = 'aq\\c') ");
-  // clexToken token;
-  // while ((token = clex (*lexer)).kind != -1)
-  // {
-  //   printf ("%s{%d, %ld, %ld} ",
-  //           token.lexeme,
-  //           token.kind,
-  //           token.linen,
-  //           token.linepos);
-  // }
-}
 
 void
 init_data (void);

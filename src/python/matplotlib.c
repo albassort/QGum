@@ -2,7 +2,7 @@
 #include <stdint.h>
 
 int
-main ()
+test (void)
 {
   Py_Initialize ();
 
@@ -13,7 +13,7 @@ main ()
   PyObject* list = PyList_New (12);
   for (Py_ssize_t i = 0; i < 12; i++)
   {
-    PyObject* num = PyLong_FromUnsignedLong (data[i]);
+    PyObject* num = PyLong_FromLong (data[i]);
     PyList_SET_ITEM (list, i, num);
   }
 
